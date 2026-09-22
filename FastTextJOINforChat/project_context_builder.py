@@ -270,6 +270,16 @@ def make_file_footer(relative_path: Path) -> str:
     )
 
 
+def format_size(num_bytes: int | float) -> str:
+    """Человекочитаемый размер: 1536 -> '1.5 KB'."""
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
 def build_output(root: Path) -> tuple[str, dict]:
     all_paths = collect_all_paths(root)
 

@@ -43,6 +43,8 @@ DOCUMENT_NAMES = {"README", "README.md", "README.txt", "LICENSE", "LICENSE.txt"}
 OUTPUT_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock"}
 SPECIAL_CODE_NAMES = {"Dockerfile", "Makefile", "CMakeLists.txt", "Procfile"}
 
+QUICK_EXTENSIONS = (".css", ".html", ".js", ".txt", ".py", ".json", ".md")
+
 
 def category(path: Path) -> str | None:
     name = path.name
@@ -259,7 +261,7 @@ class App(tk.Tk):
         quick = ttk.Frame(g)
         quick.pack(fill="x")
         ttk.Label(quick, text="Быстро:").pack(side="left")
-        for ext in (".css", ".html", ".js", ".txt", ".py", ".json", ".md"):
+        for ext in (QUICK_EXTENSIONS):
             ttk.Button(
                 quick, text=ext, width=6,
                 command=lambda e=ext: self.add_ext(e),

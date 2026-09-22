@@ -19,12 +19,924 @@ FastTextJOINforChat/
 # FILE CONTENTS
 ##############################################################################################################
 
+==============================================================================================================
+FILE: project_context_builder.py
+TYPE: code
+==============================================================================================================
+--- BEGIN FILE: project_context_builder.py ---
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Project Context Builder
+
+Выбирает каталог и создаёт один TXT-файл для передачи проектного
+контекста в ChatGPT/другую LLM.
+
+В итоговом файле:
+1. Полное дерево каталога со всеми файлами.
+2. Затем содержимое найденных текстовых/кодовых файлов.
+3. Каждый файл имеет явно обозначенные BEGIN/END-блоки.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+
+# Папки, которые обычно не нужны в контексте проекта.
+# Их можно убрать, если нужно включать абсолютно всё содержимое.
+DEFAULT_IGNORED_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".idea",
+    ".vscode",
+    "node_modules",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    ".nuxt",
+    "coverage",
+}
+
+
+# Явно текстовые расширения.
+TEXT_EXTENSIONS = {
+    # Python
+    ".py", ".pyw", ".pyi",
+    # JavaScript / TypeScript
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+    # Web
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".vue", ".svelte",
+    # Java / Kotlin / JVM
+    ".java", ".kt", ".kts", ".groovy",
+    # C / C++
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh",
+    # C#
+    ".cs",
+    # Go / Rust
+    ".go", ".rs",
+    # PHP / Ruby / Perl
+    ".php", ".phtml", ".rb", ".rake", ".pl", ".pm",
+    # Swift / Objective-C
+    ".swift", ".m", ".mm",
+    # Shell
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    # SQL
+    ".sql",
+    # Data / config
+    ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".conf", ".properties", ".xml",
+    # Markdown / text
+    ".md", ".markdown", ".txt", ".rst", ".adoc",
+    # Docker / misc
+    ".dockerfile",
+    # Build / config without common extension
+    ".gitignore", ".gitattributes", ".editorconfig",
+    ".npmrc", ".nvmrc", ".prettierrc", ".eslintrc",
+}
+
+
+# Имена файлов, которые считаем текстовыми даже без обычного расширения.
+TEXT_FILENAMES = {
+    "Dockerfile",
+    "Makefile",
+    "CMakeLists.txt",
+    "Procfile",
+    "requirements.txt",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "README",
+    "README.md",
+    "LICENSE",
+    "LICENSE.txt",
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig",
+}
+
+
+# Максимальный размер одного файла, который автоматически попадёт
+# в итоговый TXT. Большие файлы лучше не отправлять модели целиком.
+MAX_FILE_SIZE_MB = 2
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+def is_probably_text_file(path: Path) -> bool:
+    """Определяет, можно ли разумно включить файл как текст/код."""
+    if path.name in TEXT_FILENAMES:
+        return True
+
+    if path.suffix.lower() in TEXT_EXTENSIONS:
+        return True
+
+    # Для файлов без расширения проверяем небольшой фрагмент.
+    if not path.suffix:
+        try:
+            sample = path.read_bytes()[:8192]
+        except OSError:
+            return False
+
+        if b"\x00" in sample:
+            return False
+
+        # UTF-8 или простой ASCII — вероятно текст.
+        try:
+            sample.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+
+    return False
+
+
+def is_ignored_dir(path: Path) -> bool:
+    return path.name in DEFAULT_IGNORED_DIRS
+
+
+def collect_all_paths(root: Path) -> list[Path]:
+    """
+    Возвращает все доступные файлы и каталоги.
+    Игнорируем только служебные/генерируемые папки из списка выше.
+    """
+    result: list[Path] = []
+
+    def walk(current: Path) -> None:
+        try:
+            entries = sorted(
+                current.iterdir(),
+                key=lambda p: (not p.is_dir(), p.name.lower())
+            )
+        except OSError:
+            return
+
+        for item in entries:
+            if item.is_dir():
+                if not is_ignored_dir(item):
+                    result.append(item)
+                    walk(item)
+            else:
+                result.append(item)
+
+    walk(root)
+    return result
+
+
+def build_tree_text(root: Path, paths: list[Path]) -> str:
+    """
+    Строит читаемое ASCII-дерево.
+
+    Для дерева используем относительные пути, чтобы итоговый TXT
+    не зависел от конкретного абсолютного пути пользователя.
+    """
+    lines = [f"ROOT: {root.resolve()}", ""]
+
+    # Словарь относительных путей для стабильного построения дерева.
+    children: dict[Path, list[Path]] = {}
+
+    for path in paths:
+        rel = path.relative_to(root)
+        parent = rel.parent
+        children.setdefault(parent, []).append(rel)
+
+    def render(parent: Path, prefix: str = "") -> None:
+        items = sorted(
+            children.get(parent, []),
+            key=lambda p: (len(p.parts), p.name.lower())
+        )
+
+        # Нам удобнее отрисовать только непосредственных детей.
+        direct: list[Path] = []
+        for rel in children.get(parent, []):
+            if len(rel.parts) == len(parent.parts) + 1:
+                direct.append(rel)
+
+        direct.sort(key=lambda p: (not p.name, p.name.lower()))
+
+        for index, rel in enumerate(direct):
+            is_last = index == len(direct) - 1
+            connector = "└── " if is_last else "├── "
+            full = root / rel
+            lines.append(prefix + connector + rel.name)
+
+            if full.is_dir():
+                extension = "    " if is_last else "│   "
+                render(rel, prefix + extension)
+
+    lines.append(root.name + "/")
+    render(Path("."), "")
+
+    return "\n".join(lines)
+
+
+def read_text_file(path: Path) -> tuple[str | None, str | None]:
+    """
+    Возвращает (текст, ошибка).
+    Пытаемся UTF-8, затем UTF-8 с BOM, cp1251 и latin-1.
+    """
+    try:
+        if path.stat().st_size > MAX_FILE_SIZE_BYTES:
+            return None, f"Файл слишком большой (> {MAX_FILE_SIZE_MB} MB)"
+
+        raw = path.read_bytes()
+
+        # Бинарные файлы не должны попадать в сборку.
+        if b"\x00" in raw[:8192]:
+            return None, "Похож на бинарный файл"
+
+        for encoding in ("utf-8", "utf-8-sig", "cp1251", "latin-1"):
+            try:
+                return raw.decode(encoding), None
+            except UnicodeDecodeError:
+                continue
+
+        return None, "Не удалось декодировать как текст"
+
+    except OSError as exc:
+        return None, f"Ошибка чтения: {exc}"
+
+
+def make_file_header(relative_path: Path) -> str:
+    rel = relative_path.as_posix()
+    return (
+        "\n"
+        + "=" * 100
+        + "\n"
+        + f"FILE: {rel}\n"
+        + "=" * 100
+        + "\n"
+        + f"--- BEGIN FILE: {rel} ---\n"
+    )
+
+
+def make_file_footer(relative_path: Path) -> str:
+    rel = relative_path.as_posix()
+    return (
+        f"\n--- END FILE: {rel} ---\n"
+        + "=" * 100
+        + "\n"
+    )
+
+
+def format_size(num_bytes: int | float) -> str:
+    """Человекочитаемый размер: 1536 -> '1.5 KB'."""
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def build_output(root: Path) -> tuple[str, dict]:
+    all_paths = collect_all_paths(root)
+
+    files = [p for p in all_paths if p.is_file()]
+    text_files = [
+        p for p in files
+        if is_probably_text_file(p)
+    ]
+
+    tree = build_tree_text(root, all_paths)
+
+    chunks: list[str] = []
+
+    chunks.append("# PROJECT CONTEXT\n")
+    chunks.append("Generated by Project Context Builder.\n")
+    chunks.append(f"Project root: {root.resolve()}\n")
+    chunks.append(
+        "The TREE section contains the complete visible directory structure.\n"
+    )
+    chunks.append(
+        "The FILE CONTENTS section contains readable text/code files.\n"
+    )
+    chunks.append("\n" + "#" * 100 + "\n")
+    chunks.append("# FULL DIRECTORY TREE\n")
+    chunks.append("#" * 100 + "\n\n")
+    chunks.append(tree)
+
+    chunks.append("\n\n" + "#" * 100 + "\n")
+    chunks.append("# FILE CONTENTS\n")
+    chunks.append("#" * 100 + "\n")
+
+    included = 0
+    skipped: list[tuple[str, str]] = []
+
+    for path in sorted(text_files, key=lambda p: p.relative_to(root).as_posix().lower()):
+        rel = path.relative_to(root)
+
+        text, error = read_text_file(path)
+        if error is not None:
+            skipped.append((rel.as_posix(), error))
+            continue
+
+        assert text is not None
+
+        chunks.append(make_file_header(rel))
+        chunks.append(text.rstrip())
+        chunks.append(make_file_footer(rel))
+        included += 1
+
+    chunks.append("\n" + "#" * 100 + "\n")
+    chunks.append("# COLLECTION SUMMARY\n")
+    chunks.append("#" * 100 + "\n")
+    chunks.append(f"Total filesystem entries in tree: {len(all_paths)}\n")
+    chunks.append(f"Total files: {len(files)}\n")
+    chunks.append(f"Recognized text/code files: {len(text_files)}\n")
+    chunks.append(f"Included file contents: {included}\n")
+
+    if skipped:
+        chunks.append("\nSkipped files:\n")
+        for filename, reason in skipped:
+            chunks.append(f"- {filename} -> {reason}\n")
+
+    output = "\n".join(chunks)
+
+    stats = {
+        "all_entries": len(all_paths),
+        "files": len(files),
+        "text_files": len(text_files),
+        "included": included,
+        "skipped": skipped,
+        "chars": len(output),
+    }
+
+    return output, stats
+
+
+def choose_directory() -> str:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+
+    selected = filedialog.askdirectory(
+        title="Выберите корневой каталог проекта"
+    )
+
+    root.destroy()
+    return selected
+
+
+def choose_output_file(initial_dir: Path) -> str:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+
+    selected = filedialog.asksaveasfilename(
+        title="Сохранить контекст проекта",
+        initialdir=str(initial_dir),
+        initialfile=f"{initial_dir.name}_context.txt",
+        defaultextension=".txt",
+        filetypes=[
+            ("Text files", "*.txt"),
+            ("All files", "*.*"),
+        ],
+    )
+
+    root.destroy()
+    return selected
+
+
+def open_folder(path: Path) -> None:
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except Exception:
+        pass
+
+
+def main() -> None:
+    selected = choose_directory()
+
+    if not selected:
+        print("Каталог не выбран.")
+        return
+
+    root = Path(selected).resolve()
+
+    try:
+        output, stats = build_output(root)
+    except Exception as exc:
+        messagebox.showerror(
+            "Ошибка",
+            f"Не удалось собрать проект:\n\n{exc}"
+        )
+        return
+
+    output_path_str = choose_output_file(root)
+    if not output_path_str:
+        print("Сохранение отменено.")
+        return
+
+    output_path = Path(output_path_str)
+
+    try:
+        output_path.write_text(output, encoding="utf-8")
+    except OSError as exc:
+        messagebox.showerror(
+            "Ошибка сохранения",
+            f"Не удалось сохранить файл:\n\n{exc}"
+        )
+        return
+
+    size_kb = output_path.stat().st_size / 1024
+
+    message = (
+        "Готово!\n\n"
+        f"Файл: {output_path}\n"
+        f"Размер: {size_kb:.1f} KB\n\n"
+        f"Всего файлов: {stats['files']}\n"
+        f"Текстовых/кодовых файлов: {stats['text_files']}\n"
+        f"Включено содержимое: {stats['included']}\n"
+    )
+
+    if stats["skipped"]:
+        message += f"\nПропущено при чтении: {len(stats['skipped'])}"
+
+    messagebox.showinfo("Project Context Builder", message)
+
+
+if __name__ == "__main__":
+    main()
+--- END FILE: project_context_builder.py ---
+==============================================================================================================
+
+==============================================================================================================
+FILE: project_context_builder_v2.py
+TYPE: code
+==============================================================================================================
+--- BEGIN FILE: project_context_builder_v2.py ---
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""Project Context Builder v2 - GUI version.
+
+Uses the original collector/reader from project_context_builder.py and adds:
+- configurable file categories;
+- configurable excluded folders;
+- max file size;
+- save path;
+- clipboard copy;
+- logging and statistics.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import subprocess
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
+
+import project_context_builder as core
+
+APP_TITLE = "Project Context Builder"
+
+CODE_EXTENSIONS = {
+    ".py", ".pyw", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+    ".java", ".kt", ".kts", ".groovy", ".c", ".h", ".cc", ".cpp", ".cxx",
+    ".hpp", ".hh", ".cs", ".go", ".rs", ".php", ".phtml", ".rb", ".rake",
+    ".pl", ".pm", ".swift", ".m", ".mm", ".sh", ".bash", ".zsh", ".fish",
+    ".ps1", ".bat", ".cmd", ".sql",
+}
+CONFIG_EXTENSIONS = {
+    ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".properties", ".xml", ".env",
+}
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".rst", ".adoc", ".log", ".csv"}
+DOCUMENT_NAMES = {"README", "README.md", "README.txt", "LICENSE", "LICENSE.txt"}
+OUTPUT_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock"}
+SPECIAL_CODE_NAMES = {"Dockerfile", "Makefile", "CMakeLists.txt", "Procfile"}
+
+
+def category(path: Path) -> str | None:
+    name = path.name
+    suffix = path.suffix.lower()
+    if name in SPECIAL_CODE_NAMES or suffix in CODE_EXTENSIONS:
+        return "code"
+    if suffix in CONFIG_EXTENSIONS:
+        return "config"
+    if name in DOCUMENT_NAMES:
+        return "document"
+    if name in OUTPUT_NAMES:
+        return "output"
+    if suffix in TEXT_EXTENSIONS:
+        return "text"
+    if core.is_probably_text_file(path):
+        return "text"
+    return None
+
+
+def parse_exclusions(text: str) -> set[str]:
+    result = set()
+    for item in text.replace(";", ",").replace("\n", ",").split(","):
+        item = item.strip().lower()
+        if item:
+            result.add(item)
+    return result
+
+
+def parse_extensions(text: str) -> set[str]:
+    """Парсит строку с расширениями: 'css, .html js .txt' -> {'.css', '.html', '.js', '.txt'}."""
+    result: set[str] = set()
+    normalized = (
+        text.replace(";", ",")
+            .replace("\n", ",")
+            .replace("\t", ",")
+            .replace(" ", ",")
+    )
+    for item in normalized.split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        if not item.startswith("."):
+            item = "." + item
+        result.add(item)
+    return result
+
+
+def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str],
+                  ext_filter: set[str] | None = None):
+    entries = core.collect_all_paths(root)
+    entries = []
+
+    def walk(cur: Path):
+        try:
+            children = sorted(cur.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError:
+            return
+        for p in children:
+            if p.is_dir():
+                if p.name.lower() in ignored:
+                    continue
+                entries.append(p)
+                walk(p)
+            else:
+                entries.append(p)
+    walk(root)
+
+    files = [p for p in entries if p.is_file()]
+    enabled = {k: vars_[k].get() for k in ("code", "config", "text", "document", "output")}
+
+    if ext_filter:
+        # Режим «только эти расширения» — категории игнорируем.
+        selected = [
+            (p, category(p) or "text")
+            for p in files
+            if p.suffix.lower() in ext_filter
+        ]
+    else:
+        selected = [(p, category(p)) for p in files]
+        selected = [(p, c) for p, c in selected if c and enabled.get(c, False)]
+
+    max_bytes = max(1, int(max_mb * 1024 * 1024))
+
+    parts = [
+        "# PROJECT CONTEXT",
+        "",
+        "Generated by Project Context Builder.",
+        f"Project root: {root.resolve()}",
+    ]
+
+    if vars_["tree"].get():
+        tree = core.build_tree_text(root, entries)
+        parts += ["", "#" * 110, "# FULL DIRECTORY TREE", "#" * 110, "", tree]
+
+    parts += ["", "#" * 110, "# FILE CONTENTS", "#" * 110]
+
+    included = 0
+    skipped = []
+    for p, c in sorted(selected, key=lambda x: x[0].relative_to(root).as_posix().lower()):
+        rel = p.relative_to(root)
+        text, error = core.read_text_file(p)
+        # core's reader uses 2 MB fixed limit, so handle the user limit directly here.
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            skipped.append((rel.as_posix(), str(exc)))
+            continue
+        if size > max_bytes:
+            skipped.append((rel.as_posix(), f"слишком большой файл ({core.format_size(size)})"))
+            continue
+        if error and text is None:
+            skipped.append((rel.as_posix(), error))
+            continue
+        if text is None:
+            skipped.append((rel.as_posix(), "ошибка чтения"))
+            continue
+        if not vars_["empty"].get() and not text.strip():
+            skipped.append((rel.as_posix(), "пустой файл"))
+            continue
+        rels = rel.as_posix()
+        parts += [
+            "", "=" * 110,
+            f"FILE: {rels}", f"TYPE: {c}",
+            "=" * 110,
+            f"--- BEGIN FILE: {rels} ---",
+            text.rstrip(),
+            f"--- END FILE: {rels} ---",
+            "=" * 110,
+        ]
+        included += 1
+
+    parts += [
+        "", "#" * 110, "# COLLECTION SUMMARY", "#" * 110,
+        f"Total entries in tree: {len(entries)}",
+        f"Total files: {len(files)}",
+        f"Selected files: {len(selected)}",
+        f"Included contents: {included}",
+        f"Skipped: {len(skipped)}",
+    ]
+    if ext_filter:
+        parts.append(f"Extension filter: {', '.join(sorted(ext_filter))}")
+    if skipped:
+        parts += ["", "Skipped files:"]
+        parts += [f"- {name} -> {reason}" for name, reason in skipped]
+
+    output = "\n".join(parts)
+    stats = {
+        "entries": len(entries), "files": len(files), "selected": len(selected),
+        "included": included, "skipped": skipped,
+        "size": len(output.encode("utf-8")),
+    }
+    return output, stats
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_TITLE)
+        self.geometry("1050x860")
+        self.minsize(900, 700)
+        self.context = ""
+        self.root_var = tk.StringVar()
+        self.output_var = tk.StringVar()
+        self.max_var = tk.StringVar(value="2")
+        self.tree_var = tk.BooleanVar(value=True)
+        self.code_var = tk.BooleanVar(value=True)
+        self.config_var = tk.BooleanVar(value=True)
+        self.text_var = tk.BooleanVar(value=True)
+        self.doc_var = tk.BooleanVar(value=True)
+        self.output_files_var = tk.BooleanVar(value=False)
+        self.empty_var = tk.BooleanVar(value=False)
+        self.exclude_var = tk.StringVar(value=", ".join(sorted(core.DEFAULT_IGNORED_DIRS)))
+        self.ext_filter_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Выберите каталог проекта.")
+        self.stats_var = tk.StringVar(value="Статистика: —")
+        self.setup_ui()
+
+    def setup_ui(self):
+        frame = ttk.Frame(self, padding=15)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Project Context Builder", font=("Segoe UI", 17, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Настройте состав контекста и одним кликом соберите проект для ChatGPT.").pack(anchor="w", pady=(2, 12))
+
+        g = ttk.LabelFrame(frame, text="1. Проект", padding=10)
+        g.pack(fill="x", pady=5)
+        ttk.Label(g, text="Каталог:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(g, textvariable=self.root_var).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(g, text="Выбрать…", command=self.choose_root).grid(row=0, column=2)
+        g.columnconfigure(1, weight=1)
+
+        g = ttk.LabelFrame(frame, text="2. Что включать", padding=10)
+        g.pack(fill="x", pady=5)
+        left, right = ttk.Frame(g), ttk.Frame(g)
+        left.grid(row=0, column=0, sticky="nw", padx=(0, 40))
+        right.grid(row=0, column=1, sticky="nw")
+        for text, var in [("Полную структуру каталога", self.tree_var), ("Исходный код", self.code_var), ("Конфигурации", self.config_var), ("Обычные текстовые файлы", self.text_var)]:
+            ttk.Checkbutton(left, text=text, variable=var).pack(anchor="w", pady=2)
+        for text, var in [("README / LICENSE / документацию", self.doc_var), ("Lock-файлы (package-lock и аналоги)", self.output_files_var), ("Включать пустые файлы", self.empty_var)]:
+            ttk.Checkbutton(right, text=text, variable=var).pack(anchor="w", pady=2)
+        ttk.Label(g, text="Максимальный размер одного файла:").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        size = ttk.Frame(g)
+        size.grid(row=1, column=1, sticky="w", pady=(10, 0))
+        ttk.Spinbox(size, from_=0.1, to=1000, increment=0.5, width=8, textvariable=self.max_var).pack(side="left")
+        ttk.Label(size, text="MB").pack(side="left", padx=5)
+
+        g = ttk.LabelFrame(frame, text="3. Фильтр по расширениям (необязательно)", padding=10)
+        g.pack(fill="x", pady=5)
+        ttk.Label(
+            g,
+            text="Пусто — фильтр выключен. Если указать расширения, попадут только файлы "
+                 "этих типов, а категории выше будут проигнорированы.",
+        ).pack(anchor="w")
+        ttk.Entry(g, textvariable=self.ext_filter_var).pack(fill="x", pady=(4, 4))
+        quick = ttk.Frame(g)
+        quick.pack(fill="x")
+        ttk.Label(quick, text="Быстро:").pack(side="left")
+        for ext in (".css", ".html", ".js", ".txt", ".py", ".json", ".md"):
+            ttk.Button(
+                quick, text=ext, width=6,
+                command=lambda e=ext: self.add_ext(e),
+            ).pack(side="left", padx=2)
+        ttk.Button(
+            quick, text="Очистить",
+            command=lambda: self.ext_filter_var.set(""),
+        ).pack(side="left", padx=(10, 0))
+
+        g = ttk.LabelFrame(frame, text="4. Исключить каталоги", padding=10)
+        g.pack(fill="x", pady=5)
+        ttk.Entry(g, textvariable=self.exclude_var).pack(fill="x")
+        ttk.Label(g, text="Названия через запятую: node_modules, .git, venv, dist …").pack(anchor="w", pady=(4, 0))
+
+        g = ttk.LabelFrame(frame, text="5. Результат", padding=10)
+        g.pack(fill="x", pady=5)
+        ttk.Label(g, text="TXT:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(g, textvariable=self.output_var).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(g, text="Куда сохранить…", command=self.choose_output).grid(row=0, column=2)
+        g.columnconfigure(1, weight=1)
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=8)
+        ttk.Button(actions, text="СОБРАТЬ КОНТЕКСТ", command=self.build).pack(side="left")
+        ttk.Button(actions, text="📋 Копировать", command=self.copy).pack(side="left", padx=7)
+        ttk.Button(actions, text="💾 Сохранить", command=self.save).pack(side="left")
+        ttk.Button(actions, text="📂 Открыть папку", command=self.open_folder).pack(side="left", padx=7)
+
+        ttk.Label(frame, textvariable=self.stats_var).pack(fill="x", pady=(2, 5))
+        log_frame = ttk.LabelFrame(frame, text="Журнал", padding=6)
+        log_frame.pack(fill="both", expand=True)
+        self.log = ScrolledText(log_frame, height=12, wrap="word", font=("Consolas", 9), state="disabled")
+        self.log.pack(fill="both", expand=True)
+        ttk.Label(frame, textvariable=self.status_var, relief="sunken", anchor="w", padding=5).pack(fill="x", pady=(6, 0))
+        self.log_msg("Приложение готово.")
+
+    def log_msg(self, msg: str):
+        self.log.configure(state="normal")
+        self.log.insert("end", msg + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+        self.update_idletasks()
+
+    def add_ext(self, ext: str):
+        current = self.ext_filter_var.get().strip()
+        existing = parse_extensions(current)
+        if ext.lower() in existing:
+            return
+        new = f"{current}, {ext}" if current else ext
+        self.ext_filter_var.set(new)
+
+    def choose_root(self):
+        selected = filedialog.askdirectory(title="Выберите корневой каталог проекта")
+        if selected:
+            root = Path(selected).resolve()
+            self.root_var.set(str(root))
+            self.output_var.set(str(root / f"{root.name}_context.txt"))
+            self.status_var.set("Каталог выбран.")
+            self.log_msg(f"Выбран проект: {root}")
+
+    def choose_output(self):
+        root = Path(self.root_var.get()).expanduser() if self.root_var.get().strip() else Path.home()
+        selected = filedialog.asksaveasfilename(
+            title="Сохранить контекст проекта", initialdir=str(root if root.exists() else Path.home()),
+            initialfile=f"{root.name}_context.txt" if root.name else "project_context.txt",
+            defaultextension=".txt", filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+        if selected:
+            self.output_var.set(selected)
+
+    def get_settings(self):
+        root_text = self.root_var.get().strip()
+        if not root_text:
+            raise ValueError("Сначала выберите каталог проекта.")
+        root = Path(root_text).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError("Каталог проекта не существует.")
+        try:
+            max_mb = float(self.max_var.get().replace(",", "."))
+        except ValueError:
+            raise ValueError("Максимальный размер файла должен быть числом.")
+        if max_mb <= 0:
+            raise ValueError("Максимальный размер должен быть больше 0.")
+        return root, max_mb
+
+    def build(self):
+        try:
+            root, max_mb = self.get_settings()
+        except ValueError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return
+        vars_ = {"tree": self.tree_var, "code": self.code_var, "config": self.config_var,
+                 "text": self.text_var, "document": self.doc_var, "output": self.output_files_var,
+                 "empty": self.empty_var}
+        ignored = parse_exclusions(self.exclude_var.get())
+        ext_filter = parse_extensions(self.ext_filter_var.get())
+        self.log_msg("=== СБОРКА ===")
+        if ext_filter:
+            self.log_msg(f"Фильтр расширений: {', '.join(sorted(ext_filter))}")
+        self.log_msg(f"Корень: {root}")
+        self.status_var.set("Сканирование проекта…")
+        try:
+            context, stats = build_context(root, vars_, max_mb, ignored, ext_filter)
+        except Exception as exc:
+            self.status_var.set("Ошибка.")
+            messagebox.showerror(APP_TITLE, f"Не удалось собрать контекст:\n\n{exc}")
+            return
+        self.context = context
+        if not self.output_var.get().strip():
+            self.output_var.set(str(root / f"{root.name}_context.txt"))
+        try:
+            out = Path(self.output_var.get()).expanduser()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(context, encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror(APP_TITLE, f"Не удалось сохранить TXT:\n\n{exc}")
+            return
+        self.stats_var.set(
+            f"Статистика: элементов {stats['entries']} • файлов {stats['files']} • выбрано {stats['selected']} • включено {stats['included']} • размер {core.format_size(stats['size'])}")
+        self.log_msg(f"Выбрано: {stats['selected']}; включено: {stats['included']}; пропущено: {len(stats['skipped'])}")
+        self.log_msg(f"Сохранено: {out}")
+        self.status_var.set("Готово. Контекст собран.")
+        messagebox.showinfo(APP_TITLE, f"Готово!\n\nВключено файлов: {stats['included']}\nРазмер: {core.format_size(stats['size'])}")
+
+    def save(self):
+        if not self.context:
+            messagebox.showwarning(APP_TITLE, "Сначала соберите контекст.")
+            return
+        out_text = self.output_var.get().strip()
+        if not out_text:
+            chosen = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+            if not chosen:
+                return
+            out_text = chosen
+            self.output_var.set(chosen)
+        try:
+            out = Path(out_text).expanduser()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(self.context, encoding="utf-8")
+            self.status_var.set("Файл сохранён.")
+            self.log_msg(f"Сохранено: {out}")
+        except OSError as exc:
+            messagebox.showerror(APP_TITLE, f"Ошибка сохранения:\n\n{exc}")
+
+    def copy(self):
+        if not self.context:
+            messagebox.showwarning(APP_TITLE, "Сначала соберите контекст.")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.context)
+            self.update()
+            self.status_var.set("Контекст скопирован в буфер обмена.")
+            self.log_msg(f"Скопировано в буфер: {core.format_size(len(self.context.encode('utf-8')))}")
+            messagebox.showinfo(APP_TITLE, "Готово!\n\nТеперь можно вставить контекст в ChatGPT через Ctrl+V.")
+        except tk.TclError as exc:
+            messagebox.showerror(APP_TITLE, f"Ошибка буфера обмена:\n\n{exc}")
+
+    def open_folder(self):
+        target = Path(self.output_var.get()).expanduser() if self.output_var.get().strip() else Path.home()
+        folder = target.parent if target.suffix else target
+        if not folder.exists():
+            messagebox.showwarning(APP_TITLE, "Папка ещё не существует.")
+            return
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(str(folder))
+            elif system == "Darwin":
+                subprocess.run(["open", str(folder)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(folder)], check=False)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Не удалось открыть папку:\n\n{exc}")
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
+--- END FILE: project_context_builder_v2.py ---
+==============================================================================================================
+
 ##############################################################################################################
 # COLLECTION SUMMARY
 ##############################################################################################################
 Total entries in tree: 4
 Total files: 4
-Selected files: 0
-Included contents: 0
+Selected files: 2
+Included contents: 2
 Skipped: 0
-Extension filter: .css
+Extension filter: .py
