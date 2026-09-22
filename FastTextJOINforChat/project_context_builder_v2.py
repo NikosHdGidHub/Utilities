@@ -71,10 +71,28 @@ def parse_exclusions(text: str) -> set[str]:
     return result
 
 
-def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str]):
+def parse_extensions(text: str) -> set[str]:
+    """Парсит строку с расширениями: 'css, .html js .txt' -> {'.css', '.html', '.js', '.txt'}."""
+    result: set[str] = set()
+    normalized = (
+        text.replace(";", ",")
+            .replace("\n", ",")
+            .replace("\t", ",")
+            .replace(" ", ",")
+    )
+    for item in normalized.split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        if not item.startswith("."):
+            item = "." + item
+        result.add(item)
+    return result
+
+
+def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str],
+                  ext_filter: set[str] | None = None):
     entries = core.collect_all_paths(root)
-    # We must apply the GUI exclusions ourselves because v1 has a fixed list.
-    # Re-scan with exactly the user's exclusions for consistency.
     entries = []
 
     def walk(cur: Path):
@@ -94,8 +112,17 @@ def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str]):
 
     files = [p for p in entries if p.is_file()]
     enabled = {k: vars_[k].get() for k in ("code", "config", "text", "document", "output")}
-    selected = [(p, category(p)) for p in files]
-    selected = [(p, c) for p, c in selected if c and enabled.get(c, False)]
+
+    if ext_filter:
+        # Режим «только эти расширения» — категории игнорируем.
+        selected = [
+            (p, category(p) or "text")
+            for p in files
+            if p.suffix.lower() in ext_filter
+        ]
+    else:
+        selected = [(p, category(p)) for p in files]
+        selected = [(p, c) for p, c in selected if c and enabled.get(c, False)]
 
     max_bytes = max(1, int(max_mb * 1024 * 1024))
 
@@ -155,6 +182,8 @@ def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str]):
         f"Included contents: {included}",
         f"Skipped: {len(skipped)}",
     ]
+    if ext_filter:
+        parts.append(f"Extension filter: {', '.join(sorted(ext_filter))}")
     if skipped:
         parts += ["", "Skipped files:"]
         parts += [f"- {name} -> {reason}" for name, reason in skipped]
@@ -186,6 +215,7 @@ class App(tk.Tk):
         self.output_files_var = tk.BooleanVar(value=False)
         self.empty_var = tk.BooleanVar(value=False)
         self.exclude_var = tk.StringVar(value=", ".join(sorted(core.DEFAULT_IGNORED_DIRS)))
+        self.ext_filter_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Выберите каталог проекта.")
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.setup_ui()
@@ -218,12 +248,33 @@ class App(tk.Tk):
         ttk.Spinbox(size, from_=0.1, to=1000, increment=0.5, width=8, textvariable=self.max_var).pack(side="left")
         ttk.Label(size, text="MB").pack(side="left", padx=5)
 
-        g = ttk.LabelFrame(frame, text="3. Исключить каталоги", padding=10)
+        g = ttk.LabelFrame(frame, text="3. Фильтр по расширениям (необязательно)", padding=10)
+        g.pack(fill="x", pady=5)
+        ttk.Label(
+            g,
+            text="Пусто — фильтр выключен. Если указать расширения, попадут только файлы "
+                 "этих типов, а категории выше будут проигнорированы.",
+        ).pack(anchor="w")
+        ttk.Entry(g, textvariable=self.ext_filter_var).pack(fill="x", pady=(4, 4))
+        quick = ttk.Frame(g)
+        quick.pack(fill="x")
+        ttk.Label(quick, text="Быстро:").pack(side="left")
+        for ext in (".css", ".html", ".js", ".txt", ".py", ".json", ".md"):
+            ttk.Button(
+                quick, text=ext, width=6,
+                command=lambda e=ext: self.add_ext(e),
+            ).pack(side="left", padx=2)
+        ttk.Button(
+            quick, text="Очистить",
+            command=lambda: self.ext_filter_var.set(""),
+        ).pack(side="left", padx=(10, 0))
+
+        g = ttk.LabelFrame(frame, text="4. Исключить каталоги", padding=10)
         g.pack(fill="x", pady=5)
         ttk.Entry(g, textvariable=self.exclude_var).pack(fill="x")
         ttk.Label(g, text="Названия через запятую: node_modules, .git, venv, dist …").pack(anchor="w", pady=(4, 0))
 
-        g = ttk.LabelFrame(frame, text="4. Результат", padding=10)
+        g = ttk.LabelFrame(frame, text="5. Результат", padding=10)
         g.pack(fill="x", pady=5)
         ttk.Label(g, text="TXT:").grid(row=0, column=0, sticky="w")
         ttk.Entry(g, textvariable=self.output_var).grid(row=0, column=1, sticky="ew", padx=8)
@@ -251,6 +302,14 @@ class App(tk.Tk):
         self.log.see("end")
         self.log.configure(state="disabled")
         self.update_idletasks()
+
+    def add_ext(self, ext: str):
+        current = self.ext_filter_var.get().strip()
+        existing = parse_extensions(current)
+        if ext.lower() in existing:
+            return
+        new = f"{current}, {ext}" if current else ext
+        self.ext_filter_var.set(new)
 
     def choose_root(self):
         selected = filedialog.askdirectory(title="Выберите корневой каталог проекта")
@@ -295,11 +354,14 @@ class App(tk.Tk):
                  "text": self.text_var, "document": self.doc_var, "output": self.output_files_var,
                  "empty": self.empty_var}
         ignored = parse_exclusions(self.exclude_var.get())
+        ext_filter = parse_extensions(self.ext_filter_var.get())
         self.log_msg("=== СБОРКА ===")
+        if ext_filter:
+            self.log_msg(f"Фильтр расширений: {', '.join(sorted(ext_filter))}")
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
         try:
-            context, stats = build_context(root, vars_, max_mb, ignored)
+            context, stats = build_context(root, vars_, max_mb, ignored, ext_filter)
         except Exception as exc:
             self.status_var.set("Ошибка.")
             messagebox.showerror(APP_TITLE, f"Не удалось собрать контекст:\n\n{exc}")
