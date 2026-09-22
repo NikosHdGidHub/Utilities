@@ -93,7 +93,7 @@ def parse_extensions(text: str) -> set[str]:
 
 
 def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str],
-                  ext_filter: set[str] | None = None):
+                  ext_filter: set[str] | None = None, ext_exclude: bool = False):
     entries = core.collect_all_paths(root)
     entries = []
 
@@ -116,12 +116,20 @@ def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str],
     enabled = {k: vars_[k].get() for k in ("code", "config", "text", "document", "output")}
 
     if ext_filter:
-        # Режим «только эти расширения» — категории игнорируем.
-        selected = [
-            (p, category(p) or "text")
-            for p in files
-            if p.suffix.lower() in ext_filter
-        ]
+        if ext_exclude:
+            # Режим «исключить эти расширения» — берём всё, кроме них.
+            selected = [
+                (p, category(p) or "text")
+                for p in files
+                if p.suffix.lower() not in ext_filter
+            ]
+        else:
+            # Режим «только эти расширения» — категории игнорируем.
+            selected = [
+                (p, category(p) or "text")
+                for p in files
+                if p.suffix.lower() in ext_filter
+            ]
     else:
         selected = [(p, category(p)) for p in files]
         selected = [(p, c) for p, c in selected if c and enabled.get(c, False)]
@@ -185,7 +193,8 @@ def build_context(root: Path, vars_: dict, max_mb: float, ignored: set[str],
         f"Skipped: {len(skipped)}",
     ]
     if ext_filter:
-        parts.append(f"Extension filter: {', '.join(sorted(ext_filter))}")
+        mode = "EXCLUDE" if ext_exclude else "INCLUDE only"
+        parts.append(f"Extension filter ({mode}): {', '.join(sorted(ext_filter))}")
     if skipped:
         parts += ["", "Skipped files:"]
         parts += [f"- {name} -> {reason}" for name, reason in skipped]
@@ -203,7 +212,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1050x860")
+        self.geometry("1050x780")
         self.minsize(900, 700)
         self.context = ""
         self.root_var = tk.StringVar()
@@ -218,13 +227,50 @@ class App(tk.Tk):
         self.empty_var = tk.BooleanVar(value=False)
         self.exclude_var = tk.StringVar(value=", ".join(sorted(core.DEFAULT_IGNORED_DIRS)))
         self.ext_filter_var = tk.StringVar(value="")
+        self.ext_exclude_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Выберите каталог проекта.")
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.setup_ui()
 
     def setup_ui(self):
-        frame = ttk.Frame(self, padding=15)
-        frame.pack(fill="both", expand=True)
+        # Внешний контейнер с вертикальной прокруткой
+        outer = ttk.Frame(self)
+        outer.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(outer, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vsb.set)
+
+        vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        frame = ttk.Frame(self.canvas, padding=15)
+        self._canvas_window = self.canvas.create_window(
+            (0, 0), window=frame, anchor="nw"
+        )
+
+        def _on_frame_configure(_event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self.canvas.itemconfigure(self._canvas_window, width=event.width)
+
+        frame.bind("<Configure>", _on_frame_configure)
+        self.canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            # Не перехватываем колесо, если курсор над текстовым виджетом (журнал).
+            widget = self.winfo_containing(event.x_root, event.y_root)
+            w = widget
+            while w is not None:
+                if isinstance(w, tk.Text):
+                    return
+                w = w.master
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # ---- Само содержимое ----
         ttk.Label(frame, text="Project Context Builder", font=("Segoe UI", 17, "bold")).pack(anchor="w")
         ttk.Label(frame, text="Настройте состав контекста и одним кликом соберите проект для ChatGPT.").pack(anchor="w", pady=(2, 12))
 
@@ -254,14 +300,20 @@ class App(tk.Tk):
         g.pack(fill="x", pady=5)
         ttk.Label(
             g,
-            text="Пусто — фильтр выключен. Если указать расширения, попадут только файлы "
-                 "этих типов, а категории выше будут проигнорированы.",
+            text="Пусто — фильтр выключен. Иначе: без галочки — попадут только файлы этих "
+                 "расширений, с галочкой — наоборот, будут исключены.",
         ).pack(anchor="w")
-        ttk.Entry(g, textvariable=self.ext_filter_var).pack(fill="x", pady=(4, 4))
+        row = ttk.Frame(g)
+        row.pack(fill="x", pady=(4, 4))
+        ttk.Entry(row, textvariable=self.ext_filter_var).pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(
+            row, text="Исключать выбранные",
+            variable=self.ext_exclude_var,
+        ).pack(side="left", padx=(8, 0))
         quick = ttk.Frame(g)
         quick.pack(fill="x")
         ttk.Label(quick, text="Быстро:").pack(side="left")
-        for ext in (QUICK_EXTENSIONS):
+        for ext in QUICK_EXTENSIONS:
             ttk.Button(
                 quick, text=ext, width=6,
                 command=lambda e=ext: self.add_ext(e),
@@ -357,13 +409,15 @@ class App(tk.Tk):
                  "empty": self.empty_var}
         ignored = parse_exclusions(self.exclude_var.get())
         ext_filter = parse_extensions(self.ext_filter_var.get())
+        ext_exclude = self.ext_exclude_var.get()
         self.log_msg("=== СБОРКА ===")
         if ext_filter:
-            self.log_msg(f"Фильтр расширений: {', '.join(sorted(ext_filter))}")
+            mode = "исключение" if ext_exclude else "включение"
+            self.log_msg(f"Фильтр расширений ({mode}): {', '.join(sorted(ext_filter))}")
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
         try:
-            context, stats = build_context(root, vars_, max_mb, ignored, ext_filter)
+            context, stats = build_context(root, vars_, max_mb, ignored, ext_filter, ext_exclude)
         except Exception as exc:
             self.status_var.set("Ошибка.")
             messagebox.showerror(APP_TITLE, f"Не удалось собрать контекст:\n\n{exc}")
