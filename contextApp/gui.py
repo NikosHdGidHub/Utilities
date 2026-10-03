@@ -46,30 +46,14 @@ class App(tk.Tk):
             value=str(settings.get("max_mb", "2"))
         )
 
-        self.tree_var = tk.BooleanVar(
-            value=bool(cats.get("tree", True))
-        )
-        self.code_var = tk.BooleanVar(
-            value=bool(cats.get("code", True))
-        )
-        self.style_var = tk.BooleanVar(
-            value=bool(cats.get("style", True))
-        )
-        self.config_var = tk.BooleanVar(
-            value=bool(cats.get("config", True))
-        )
-        self.doc_var = tk.BooleanVar(
-            value=bool(cats.get("document", True))
-        )
-        self.text_var = tk.BooleanVar(
-            value=bool(cats.get("text", True))
-        )
-        self.data_var = tk.BooleanVar(
-            value=bool(cats.get("data", True))
-        )
-        self.log_var = tk.BooleanVar(
-            value=bool(cats.get("log", True))
-        )
+        self.tree_var = tk.BooleanVar(value=bool(cats.get("tree", True)))
+        self.code_var = tk.BooleanVar(value=bool(cats.get("code", True)))
+        self.style_var = tk.BooleanVar(value=bool(cats.get("style", True)))
+        self.config_var = tk.BooleanVar(value=bool(cats.get("config", True)))
+        self.doc_var = tk.BooleanVar(value=bool(cats.get("document", True)))
+        self.text_var = tk.BooleanVar(value=bool(cats.get("text", True)))
+        self.data_var = tk.BooleanVar(value=bool(cats.get("data", True)))
+        self.log_var = tk.BooleanVar(value=bool(cats.get("log", True)))
         self.output_files_var = tk.BooleanVar(
             value=bool(cats.get("output_files", False))
         )
@@ -95,11 +79,17 @@ class App(tk.Tk):
             value=bool(settings.get("extension_exclude", False))
         )
 
+        self.recent_projects: list[str] = list(
+            settings.get("recent_projects") or []
+        )
+        self.recent_outputs: dict[str, str] = dict(
+            settings.get("recent_outputs") or {}
+        )
+
         self.status_var = tk.StringVar(value="Выберите каталог проекта.")
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.advanced_summary_var = tk.StringVar(value="")
 
-        # Перехватываем закрытие окна, чтобы сохранить настройки.
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.setup_ui()
@@ -114,6 +104,8 @@ class App(tk.Tk):
             "write", lambda *_: self._update_advanced_summary()
         )
         self._update_advanced_summary()
+        self._refresh_recent_menu()
+
     # ---------- UI ----------
 
     def setup_ui(self) -> None:
@@ -208,11 +200,21 @@ class App(tk.Tk):
             padx=8,
         )
 
+        # Меню недавних проектов.
+        self.recent_menu = tk.Menu(self, tearoff=False)
+        self.recent_menu_btn = ttk.Menubutton(
+            project_group,
+            text="▼",
+            width=3,
+            menu=self.recent_menu,
+        )
+        self.recent_menu_btn.grid(row=0, column=2, padx=(0, 4))
+
         ttk.Button(
             project_group,
             text="Выбрать…",
             command=self.choose_root,
-        ).grid(row=0, column=2)
+        ).grid(row=0, column=3)
 
         project_group.columnconfigure(1, weight=1)
 
@@ -382,8 +384,8 @@ class App(tk.Tk):
 
         ttk.Button(
             actions,
-            text="💾 Сохранить",
-            command=self.save,
+            text="📄 Открыть TXT",
+            command=self.open_output_file,
         ).pack(side="left")
 
         ttk.Button(
@@ -423,6 +425,97 @@ class App(tk.Tk):
 
         self.log_msg("Приложение готово.")
         self.log_msg(f"Файл настроек: {core.settings_path()}")
+
+    # ---------- Недавние проекты ----------
+
+    def _refresh_recent_menu(self) -> None:
+        self.recent_menu.delete(0, "end")
+
+        if not self.recent_projects:
+            self.recent_menu.add_command(
+                label="(пусто)",
+                state="disabled",
+            )
+            return
+
+        for path in self.recent_projects:
+            display = path
+            if len(display) > 70:
+                display = "…" + display[-68:]
+
+            self.recent_menu.add_command(
+                label=display,
+                command=lambda p=path: self._open_recent_project(p),
+            )
+
+        self.recent_menu.add_separator()
+        self.recent_menu.add_command(
+            label="Очистить список",
+            command=self._clear_recent_projects,
+        )
+
+    def _add_recent_project(self, path: str) -> None:
+        if not path:
+            return
+
+        # Убираем дубликат и добавляем в начало.
+        self.recent_projects = [
+            p for p in self.recent_projects if p != path
+        ]
+        self.recent_projects.insert(0, path)
+        self.recent_projects = self.recent_projects[
+            : core.MAX_RECENT_PROJECTS
+        ]
+
+        # Убираем карту путей для проектов, которых больше нет в списке.
+        keep = set(self.recent_projects)
+        self.recent_outputs = {
+            k: v for k, v in self.recent_outputs.items() if k in keep
+        }
+
+        self._refresh_recent_menu()
+
+    def _open_recent_project(self, path: str) -> None:
+        p = Path(path).expanduser()
+
+        if not p.is_dir():
+            messagebox.showwarning(
+                APP_TITLE,
+                f"Каталог больше не существует:\n{path}",
+            )
+            self.recent_projects = [
+                item for item in self.recent_projects if item != path
+            ]
+            self.recent_outputs.pop(path, None)
+            self._refresh_recent_menu()
+            return
+
+        self.root_var.set(str(p))
+
+        saved_output = self.recent_outputs.get(path)
+        if saved_output:
+            self.output_var.set(saved_output)
+            self.log_msg(f"Восстановлен путь сохранения: {saved_output}")
+        else:
+            self.output_var.set(str(p / f"{p.name}_context.txt"))
+
+        self.status_var.set("Выбран проект из недавних.")
+        self.log_msg(f"Недавний проект: {p}")
+
+    def _clear_recent_projects(self) -> None:
+        if not self.recent_projects:
+            return
+
+        if not messagebox.askyesno(
+            APP_TITLE,
+            "Очистить список недавних проектов?",
+        ):
+            return
+
+        self.recent_projects = []
+        self.recent_outputs = {}
+        self._refresh_recent_menu()
+        self.log_msg("Список недавних проектов очищен.")
 
     # ---------- Дополнительные настройки ----------
 
@@ -606,46 +699,7 @@ class App(tk.Tk):
         self.exclude_var.set(", ".join(sorted(core.DEFAULT_IGNORED_DIRS)))
         self.log_msg("Сброшен список исключённых каталогов.")
 
-    # ---------- Настройки (JSON) ----------
-
-    def _collect_settings(self) -> dict:
-        """Собирает текущее состояние GUI в словарь для сохранения."""
-        return {
-            "version": 1,
-            "categories": {
-                "tree": self.tree_var.get(),
-                "code": self.code_var.get(),
-                "style": self.style_var.get(),
-                "config": self.config_var.get(),
-                "document": self.doc_var.get(),
-                "text": self.text_var.get(),
-                "data": self.data_var.get(),
-                "log": self.log_var.get(),
-                "output_files": self.output_files_var.get(),
-                "empty": self.empty_var.get(),
-                "env_files": self.env_files_var.get(),
-            },
-            "max_mb": self.max_var.get(),
-            "excluded_dirs": self.exclude_var.get(),
-            "extension_filter": self.ext_filter_var.get(),
-            "extension_exclude": self.ext_exclude_var.get(),
-        }
-
-    def _save_settings_on_exit(self) -> None:
-        """Сохраняет настройки при закрытии. Молча — не блокируем выход."""
-        data = self._collect_settings()
-        ok, error = core.save_settings(data)
-
-        if not ok and error:
-            # Не показываем диалог при выходе — просто пишем в stdout.
-            print(f"[settings] не удалось сохранить: {error}")
-
-    def _on_close(self) -> None:
-        self._save_settings_on_exit()
-        self.destroy()
-
     def _reset_all_settings(self) -> None:
-        """Сбрасывает абсолютно все настройки к дефолтам."""
         if not messagebox.askyesno(
             APP_TITLE,
             "Сбросить все настройки к значениям по умолчанию?",
@@ -668,17 +722,64 @@ class App(tk.Tk):
         self.env_files_var.set(bool(cats.get("env_files", False)))
 
         self.max_var.set(str(defaults.get("max_mb", "2")))
-        self.exclude_var.set(
-            str(defaults.get("excluded_dirs", ""))
-        )
-        self.ext_filter_var.set(
-            str(defaults.get("extension_filter", ""))
-        )
+        self.exclude_var.set(str(defaults.get("excluded_dirs", "")))
+        self.ext_filter_var.set(str(defaults.get("extension_filter", "")))
         self.ext_exclude_var.set(
             bool(defaults.get("extension_exclude", False))
         )
 
         self.log_msg("Настройки сброшены к значениям по умолчанию.")
+
+    # ---------- Настройки (JSON) ----------
+
+    def _collect_settings(self) -> dict:
+        # Запоминаем последний использованный путь сохранения для
+        # текущего проекта, чтобы подставлять его при следующем открытии.
+        root = self.root_var.get().strip()
+        output = self.output_var.get().strip()
+
+        if root and output:
+            self.recent_outputs[root] = output
+
+        # Убираем карту для проектов, которых нет в списке недавних.
+        keep = set(self.recent_projects)
+        self.recent_outputs = {
+            k: v for k, v in self.recent_outputs.items() if k in keep
+        }
+
+        return {
+            "version": core.SETTINGS_VERSION,
+            "categories": {
+                "tree": self.tree_var.get(),
+                "code": self.code_var.get(),
+                "style": self.style_var.get(),
+                "config": self.config_var.get(),
+                "document": self.doc_var.get(),
+                "text": self.text_var.get(),
+                "data": self.data_var.get(),
+                "log": self.log_var.get(),
+                "output_files": self.output_files_var.get(),
+                "empty": self.empty_var.get(),
+                "env_files": self.env_files_var.get(),
+            },
+            "max_mb": self.max_var.get(),
+            "excluded_dirs": self.exclude_var.get(),
+            "extension_filter": self.ext_filter_var.get(),
+            "extension_exclude": self.ext_exclude_var.get(),
+            "recent_projects": list(self.recent_projects),
+            "recent_outputs": dict(self.recent_outputs),
+        }
+
+    def _save_settings_on_exit(self) -> None:
+        data = self._collect_settings()
+        ok, error = core.save_settings(data)
+
+        if not ok and error:
+            print(f"[settings] не удалось сохранить: {error}")
+
+    def _on_close(self) -> None:
+        self._save_settings_on_exit()
+        self.destroy()
 
     # ---------- Пресеты ----------
 
@@ -744,6 +845,7 @@ class App(tk.Tk):
 
         self.root_var.set(str(root))
         self.output_var.set(str(root / f"{root.name}_context.txt"))
+        self._add_recent_project(str(root))
         self.status_var.set("Каталог выбран.")
         self.log_msg(f"Выбран проект: {root}")
 
@@ -915,34 +1017,6 @@ class App(tk.Tk):
             f"Размер: {core.format_size(stats['size'])}",
         )
 
-    def save(self) -> None:
-        if not self.context:
-            messagebox.showwarning(
-                APP_TITLE,
-                "Сначала соберите контекст.",
-            )
-            return
-
-        output_text = self.output_var.get().strip()
-
-        if not output_text:
-            chosen = filedialog.asksaveasfilename(
-                defaultextension=".txt",
-                filetypes=[("Text files", "*.txt")],
-            )
-
-            if not chosen:
-                return
-
-            output_text = chosen
-            self.output_var.set(chosen)
-
-        output_path = Path(output_text).expanduser()
-
-        if self._write_context(output_path):
-            self.status_var.set("Файл сохранён.")
-            self.log_msg(f"Сохранено: {output_path}")
-
     def copy(self) -> None:
         if not self.context:
             messagebox.showwarning(
@@ -975,6 +1049,41 @@ class App(tk.Tk):
             messagebox.showerror(
                 APP_TITLE,
                 f"Ошибка буфера обмена:\n\n{exc}",
+            )
+
+    def open_output_file(self) -> None:
+        output_text = self.output_var.get().strip()
+
+        if not output_text:
+            messagebox.showwarning(
+                APP_TITLE,
+                "Путь к файлу не задан.",
+            )
+            return
+
+        path = Path(output_text).expanduser()
+
+        if not path.exists():
+            messagebox.showwarning(
+                APP_TITLE,
+                f"Файл ещё не создан:\n{path}",
+            )
+            return
+
+        try:
+            system = platform.system()
+
+            if system == "Windows":
+                os.startfile(str(path))
+            elif system == "Darwin":
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+
+        except Exception as exc:
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось открыть файл:\n\n{exc}",
             )
 
     def open_folder(self) -> None:

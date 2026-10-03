@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 import os
 import platform
@@ -606,6 +607,7 @@ def build_context(
 # =====================================================================
 
 SETTINGS_VERSION = 1
+MAX_RECENT_PROJECTS = 10
 
 
 def settings_path() -> Path:
@@ -648,6 +650,8 @@ def default_settings() -> dict:
         "excluded_dirs": ", ".join(sorted(DEFAULT_IGNORED_DIRS)),
         "extension_filter": "",
         "extension_exclude": False,
+        "recent_projects": [],
+        "recent_outputs": {},
     }
 
 
@@ -678,7 +682,7 @@ def load_settings() -> dict:
 def _merge_settings(defaults: dict, data: dict) -> dict:
     """
     Глубокий merge: если в data чего-то нет, берём из defaults.
-    Также отсеивает значения очевидно неверного типа.
+    Отсеивает значения очевидно неверного типа.
     """
     result: dict = {}
 
@@ -689,12 +693,45 @@ def _merge_settings(defaults: dict, data: dict) -> dict:
 
         value = data[key]
 
-        if isinstance(default_value, dict) and isinstance(value, dict):
-            result[key] = _merge_settings(default_value, value)
+        if isinstance(default_value, dict):
+            if not isinstance(value, dict):
+                result[key] = default_value
+            elif not default_value:
+                # Пустой шаблон — значит словарь произвольной формы
+                # (например, карта «проект → последний путь сохранения»).
+                # Берём как есть, фильтруя неверные типы.
+                result[key] = {
+                    k: v for k, v in value.items()
+                    if isinstance(k, str) and isinstance(v, str)
+                }
+            else:
+                result[key] = _merge_settings(default_value, value)
+
+        elif isinstance(default_value, list):
+            if not isinstance(value, list):
+                result[key] = default_value
+            else:
+                cleaned = [
+                    item for item in value
+                    if isinstance(item, str) and item.strip()
+                ]
+
+                # Дедупликация с сохранением порядка.
+                seen: set[str] = set()
+                unique: list[str] = []
+                for item in cleaned:
+                    if item not in seen:
+                        seen.add(item)
+                        unique.append(item)
+
+                result[key] = unique[:MAX_RECENT_PROJECTS]
+
         elif isinstance(default_value, bool) and not isinstance(value, bool):
             result[key] = default_value
+
         elif isinstance(default_value, str) and not isinstance(value, str):
             result[key] = default_value
+
         else:
             result[key] = value
 
