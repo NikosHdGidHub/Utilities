@@ -1,5 +1,7 @@
 from __future__ import annotations
-
+import json
+import os
+import platform
 from pathlib import Path
 
 # Папки, которые обычно не нужны в контексте проекта.
@@ -598,3 +600,123 @@ def build_context(
     }
 
     return output, stats
+
+# =====================================================================
+# Settings (JSON persistence)
+# =====================================================================
+
+SETTINGS_VERSION = 1
+
+
+def settings_path() -> Path:
+    """Кроссплатформенный путь к файлу настроек."""
+    home = Path.home()
+    system = platform.system()
+
+    if system == "Windows":
+        base = Path(
+            os.environ.get("APPDATA", home / "AppData" / "Roaming")
+        )
+    elif system == "Darwin":
+        base = home / "Library" / "Application Support"
+    else:
+        base = Path(
+            os.environ.get("XDG_CONFIG_HOME", home / ".config")
+        )
+
+    return base / "ProjectContextBuilder" / "settings.json"
+
+
+def default_settings() -> dict:
+    """Свежий словарь настроек по умолчанию."""
+    return {
+        "version": SETTINGS_VERSION,
+        "categories": {
+            "tree": True,
+            "code": True,
+            "style": True,
+            "config": True,
+            "document": True,
+            "text": True,
+            "data": True,
+            "log": True,
+            "output_files": False,
+            "empty": False,
+            "env_files": False,
+        },
+        "max_mb": "2",
+        "excluded_dirs": ", ".join(sorted(DEFAULT_IGNORED_DIRS)),
+        "extension_filter": "",
+        "extension_exclude": False,
+    }
+
+
+def load_settings() -> dict:
+    """
+    Читает настройки из файла.
+
+    При любой ошибке (нет файла, битый JSON, не тот тип) —
+    возвращает дефолты. Никогда не бросает исключений.
+    """
+    path = settings_path()
+
+    if not path.exists():
+        return default_settings()
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return default_settings()
+
+    if not isinstance(data, dict):
+        return default_settings()
+
+    return _merge_settings(default_settings(), data)
+
+
+def _merge_settings(defaults: dict, data: dict) -> dict:
+    """
+    Глубокий merge: если в data чего-то нет, берём из defaults.
+    Также отсеивает значения очевидно неверного типа.
+    """
+    result: dict = {}
+
+    for key, default_value in defaults.items():
+        if key not in data:
+            result[key] = default_value
+            continue
+
+        value = data[key]
+
+        if isinstance(default_value, dict) and isinstance(value, dict):
+            result[key] = _merge_settings(default_value, value)
+        elif isinstance(default_value, bool) and not isinstance(value, bool):
+            result[key] = default_value
+        elif isinstance(default_value, str) and not isinstance(value, str):
+            result[key] = default_value
+        else:
+            result[key] = value
+
+    return result
+
+
+def save_settings(data: dict) -> tuple[bool, str | None]:
+    """
+    Атомарно сохраняет настройки.
+
+    Возвращает (успех, текст ошибки). Никогда не бросает.
+    """
+    path = settings_path()
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+
+        return True, None
+    except OSError as exc:
+        return False, str(exc)

@@ -35,36 +35,75 @@ class App(tk.Tk):
         self.context = ""
         self._advanced_window: tk.Toplevel | None = None
 
+        # Настройки читаем ДО создания переменных — чтобы сразу
+        # подставить сохранённые значения.
+        settings = core.load_settings()
+        cats = settings.get("categories") or {}
+
         self.root_var = tk.StringVar()
         self.output_var = tk.StringVar()
-        self.max_var = tk.StringVar(value="2")
+        self.max_var = tk.StringVar(
+            value=str(settings.get("max_mb", "2"))
+        )
 
-        self.tree_var = tk.BooleanVar(value=True)
-        self.code_var = tk.BooleanVar(value=True)
-        self.style_var = tk.BooleanVar(value=True)
-        self.config_var = tk.BooleanVar(value=True)
-        self.doc_var = tk.BooleanVar(value=True)
-        self.text_var = tk.BooleanVar(value=True)
-        self.data_var = tk.BooleanVar(value=True)
-        self.log_var = tk.BooleanVar(value=True)
-        self.output_files_var = tk.BooleanVar(value=False)
-        self.empty_var = tk.BooleanVar(value=False)
-        # По умолчанию .env* исключены — там могут быть секреты.
-        self.env_files_var = tk.BooleanVar(value=False)
+        self.tree_var = tk.BooleanVar(
+            value=bool(cats.get("tree", True))
+        )
+        self.code_var = tk.BooleanVar(
+            value=bool(cats.get("code", True))
+        )
+        self.style_var = tk.BooleanVar(
+            value=bool(cats.get("style", True))
+        )
+        self.config_var = tk.BooleanVar(
+            value=bool(cats.get("config", True))
+        )
+        self.doc_var = tk.BooleanVar(
+            value=bool(cats.get("document", True))
+        )
+        self.text_var = tk.BooleanVar(
+            value=bool(cats.get("text", True))
+        )
+        self.data_var = tk.BooleanVar(
+            value=bool(cats.get("data", True))
+        )
+        self.log_var = tk.BooleanVar(
+            value=bool(cats.get("log", True))
+        )
+        self.output_files_var = tk.BooleanVar(
+            value=bool(cats.get("output_files", False))
+        )
+        self.empty_var = tk.BooleanVar(
+            value=bool(cats.get("empty", False))
+        )
+        self.env_files_var = tk.BooleanVar(
+            value=bool(cats.get("env_files", False))
+        )
 
         self.exclude_var = tk.StringVar(
-            value=", ".join(sorted(core.DEFAULT_IGNORED_DIRS))
+            value=str(
+                settings.get(
+                    "excluded_dirs",
+                    ", ".join(sorted(core.DEFAULT_IGNORED_DIRS)),
+                )
+            )
         )
-        self.ext_filter_var = tk.StringVar()
-        self.ext_exclude_var = tk.BooleanVar(value=False)
+        self.ext_filter_var = tk.StringVar(
+            value=str(settings.get("extension_filter", ""))
+        )
+        self.ext_exclude_var = tk.BooleanVar(
+            value=bool(settings.get("extension_exclude", False))
+        )
 
         self.status_var = tk.StringVar(value="Выберите каталог проекта.")
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.advanced_summary_var = tk.StringVar(value="")
 
+        # Перехватываем закрытие окна, чтобы сохранить настройки.
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         self.setup_ui()
 
-        # Обновление строки-резюме при изменении фильтров.
         self.ext_filter_var.trace_add(
             "write", lambda *_: self._update_advanced_summary()
         )
@@ -75,7 +114,6 @@ class App(tk.Tk):
             "write", lambda *_: self._update_advanced_summary()
         )
         self._update_advanced_summary()
-
     # ---------- UI ----------
 
     def setup_ui(self) -> None:
@@ -384,6 +422,7 @@ class App(tk.Tk):
         ).pack(fill="x", pady=(4, 0))
 
         self.log_msg("Приложение готово.")
+        self.log_msg(f"Файл настроек: {core.settings_path()}")
 
     # ---------- Дополнительные настройки ----------
 
@@ -508,7 +547,7 @@ class App(tk.Tk):
             foreground="#666666",
         ).pack(anchor="w", pady=(4, 0))
 
-        # --- Кнопки ---
+                # --- Кнопки ---
         btn_row = ttk.Frame(container)
         btn_row.pack(fill="x", pady=(6, 0))
 
@@ -526,12 +565,27 @@ class App(tk.Tk):
 
         ttk.Button(
             btn_row,
+            text="Сбросить всё",
+            command=self._reset_all_settings,
+        ).pack(side="left", padx=(6, 0))
+
+        ttk.Button(
+            btn_row,
             text="Готово",
             command=win.destroy,
         ).pack(side="right")
 
-        win.bind("<Escape>", lambda _e: win.destroy())
+        # Путь к файлу настроек — мелким шрифтом.
+        ttk.Label(
+            container,
+            text=f"Файл настроек: {core.settings_path()}",
+            foreground="#888888",
+            wraplength=640,
+            justify="left",
+        ).pack(anchor="w", pady=(10, 0))
 
+        win.bind("<Escape>", lambda _e: win.destroy())
+        
         # Центрируем относительно главного окна.
         win.update_idletasks()
         w = win.winfo_width()
@@ -551,6 +605,80 @@ class App(tk.Tk):
     def _reset_excluded_dirs(self) -> None:
         self.exclude_var.set(", ".join(sorted(core.DEFAULT_IGNORED_DIRS)))
         self.log_msg("Сброшен список исключённых каталогов.")
+
+    # ---------- Настройки (JSON) ----------
+
+    def _collect_settings(self) -> dict:
+        """Собирает текущее состояние GUI в словарь для сохранения."""
+        return {
+            "version": 1,
+            "categories": {
+                "tree": self.tree_var.get(),
+                "code": self.code_var.get(),
+                "style": self.style_var.get(),
+                "config": self.config_var.get(),
+                "document": self.doc_var.get(),
+                "text": self.text_var.get(),
+                "data": self.data_var.get(),
+                "log": self.log_var.get(),
+                "output_files": self.output_files_var.get(),
+                "empty": self.empty_var.get(),
+                "env_files": self.env_files_var.get(),
+            },
+            "max_mb": self.max_var.get(),
+            "excluded_dirs": self.exclude_var.get(),
+            "extension_filter": self.ext_filter_var.get(),
+            "extension_exclude": self.ext_exclude_var.get(),
+        }
+
+    def _save_settings_on_exit(self) -> None:
+        """Сохраняет настройки при закрытии. Молча — не блокируем выход."""
+        data = self._collect_settings()
+        ok, error = core.save_settings(data)
+
+        if not ok and error:
+            # Не показываем диалог при выходе — просто пишем в stdout.
+            print(f"[settings] не удалось сохранить: {error}")
+
+    def _on_close(self) -> None:
+        self._save_settings_on_exit()
+        self.destroy()
+
+    def _reset_all_settings(self) -> None:
+        """Сбрасывает абсолютно все настройки к дефолтам."""
+        if not messagebox.askyesno(
+            APP_TITLE,
+            "Сбросить все настройки к значениям по умолчанию?",
+        ):
+            return
+
+        defaults = core.default_settings()
+        cats = defaults.get("categories") or {}
+
+        self.tree_var.set(bool(cats.get("tree", True)))
+        self.code_var.set(bool(cats.get("code", True)))
+        self.style_var.set(bool(cats.get("style", True)))
+        self.config_var.set(bool(cats.get("config", True)))
+        self.doc_var.set(bool(cats.get("document", True)))
+        self.text_var.set(bool(cats.get("text", True)))
+        self.data_var.set(bool(cats.get("data", True)))
+        self.log_var.set(bool(cats.get("log", True)))
+        self.output_files_var.set(bool(cats.get("output_files", False)))
+        self.empty_var.set(bool(cats.get("empty", False)))
+        self.env_files_var.set(bool(cats.get("env_files", False)))
+
+        self.max_var.set(str(defaults.get("max_mb", "2")))
+        self.exclude_var.set(
+            str(defaults.get("excluded_dirs", ""))
+        )
+        self.ext_filter_var.set(
+            str(defaults.get("extension_filter", ""))
+        )
+        self.ext_exclude_var.set(
+            bool(defaults.get("extension_exclude", False))
+        )
+
+        self.log_msg("Настройки сброшены к значениям по умолчанию.")
 
     # ---------- Пресеты ----------
 
