@@ -23,6 +23,18 @@ DEFAULT_IGNORED_DIRS = {
     "coverage",
 }
 
+# Файлы, которые исключаются по умолчанию.
+# Это не про папки! .env чаще всего именно файл с секретами.
+DEFAULT_EXCLUDED_FILES = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.staging",
+    ".env.test",
+    ".env.ci",
+}
+
 CODE_EXTENSIONS = {
     ".py", ".pyw", ".pyi",
     ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
@@ -38,9 +50,34 @@ CODE_EXTENSIONS = {
     ".sql",
 }
 
+# Дополнительные расширения кода — часто встречаются, но не в основных наборах.
+EXTRA_CODE_EXTENSIONS = {
+    ".spec",     # PyInstaller (это Python-код)
+    ".gradle",   # Gradle
+    ".cmake",    # CMake
+    ".mk",       # Makefile-фрагменты
+}
+
 CONFIG_EXTENSIONS = {
     ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg",
-    ".conf", ".properties", ".xml", ".env",
+    ".conf", ".properties", ".xml",
+}
+
+EXTRA_CONFIG_EXTENSIONS = {
+    ".tmpl",
+    ".template",
+}
+
+# Dot-файлы конфигурации — у большинства нет расширения.
+DOTFILE_CONFIG_NAMES = {
+    ".gitignore", ".gitattributes", ".dockerignore", ".npmignore",
+    ".editorconfig", ".npmrc", ".nvmrc", ".yarnrc",
+    ".prettierrc", ".prettierignore",
+    ".eslintrc", ".eslintignore",
+    ".babelrc", ".browserslistrc",
+    ".flake8", ".pylintrc", ".isort.cfg",
+    ".rubocop.yml",
+    ".clang-format",
 }
 
 TEXT_EXTENSIONS = {
@@ -62,15 +99,34 @@ SPECIAL_CODE_NAMES = {
 }
 
 
+def _is_env_like(name: str) -> bool:
+    """'.env' или '.env.local' / '.env.production' и т.п."""
+    lower = name.lower()
+    return lower == ".env" or lower.startswith(".env.")
+
+
 def category(path: Path) -> str | None:
     """Определяет категорию файла для фильтрации в GUI."""
     name = path.name
     suffix = path.suffix.lower()
 
-    if name in SPECIAL_CODE_NAMES or suffix in CODE_EXTENSIONS:
+    # .env* — конфигурация. Исключение по умолчанию делается отдельно,
+    # в build_context, чтобы категория оставалась логичной.
+    if _is_env_like(name):
+        return "config"
+
+    if (
+        name in SPECIAL_CODE_NAMES
+        or suffix in CODE_EXTENSIONS
+        or suffix in EXTRA_CODE_EXTENSIONS
+    ):
         return "code"
 
-    if suffix in CONFIG_EXTENSIONS:
+    if (
+        name in DOTFILE_CONFIG_NAMES
+        or suffix in CONFIG_EXTENSIONS
+        or suffix in EXTRA_CONFIG_EXTENSIONS
+    ):
         return "config"
 
     if name in DOCUMENT_NAMES:
@@ -89,36 +145,53 @@ def category(path: Path) -> str | None:
 
 
 def is_probably_text_file(path: Path) -> bool:
-    """Грубая проверка: можно ли считать файл текстовым."""
-    if path.name in DOCUMENT_NAMES or path.name in OUTPUT_NAMES:
+    """
+    Грубая проверка: можно ли считать файл текстовым.
+
+    Для известных расширений сразу True. Для всех остальных —
+    читаем «шапку» файла (а не только файлы без расширения, как раньше).
+    """
+    name = path.name
+
+    if name in DOCUMENT_NAMES or name in OUTPUT_NAMES:
         return True
 
-    if path.name in SPECIAL_CODE_NAMES:
+    if name in SPECIAL_CODE_NAMES:
         return True
 
-    if path.suffix.lower() in (
-        CODE_EXTENSIONS | CONFIG_EXTENSIONS | TEXT_EXTENSIONS
+    if name in DOTFILE_CONFIG_NAMES:
+        return True
+
+    if _is_env_like(name):
+        return True
+
+    suffix = path.suffix.lower()
+
+    if suffix in (
+        CODE_EXTENSIONS
+        | CONFIG_EXTENSIONS
+        | TEXT_EXTENSIONS
+        | EXTRA_CODE_EXTENSIONS
+        | EXTRA_CONFIG_EXTENSIONS
     ):
         return True
 
-    if not path.suffix:
-        try:
-            with path.open("rb") as f:
-                sample = f.read(8192)
-        except OSError:
-            return False
+    # Незнакомое расширение — заглядываем в содержимое.
+    try:
+        with path.open("rb") as f:
+            sample = f.read(8192)
+    except OSError:
+        return False
 
-        # Именно нулевой байт, а не литерал "\x00" из четырёх символов.
-        if b"\x00" in sample:
-            return False
+    # Именно нулевой байт, а не литерал "\x00" из четырёх символов.
+    if b"\x00" in sample:
+        return False
 
-        try:
-            sample.decode("utf-8")
-            return True
-        except UnicodeDecodeError:
-            return False
-
-    return False
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
 
 
 def collect_all_paths(
@@ -230,7 +303,6 @@ def read_text_file(
         with path.open("rb") as handle:
             head = handle.read(8192)
 
-            # Проверяем первые 8 КБ на нуль-байт (признак бинарника).
             if b"\x00" in head:
                 return None, "Похож на бинарный файл"
 
@@ -302,21 +374,40 @@ def build_context(
     ignored_dirs: set[str],
     ext_filter: set[str] | None = None,
     ext_exclude: bool = False,
+    include_env_files: bool = False,
 ) -> tuple[str, dict]:
     """
     Собирает итоговый текст контекста и статистику.
 
     Фильтр категорий и фильтр расширений применяются вместе:
     файл должен подойти И по категории, И по расширению.
+
+    Файлы из DEFAULT_EXCLUDED_FILES (в первую очередь .env*) не попадают
+    в контекст, если include_env_files=False.
     """
     entries = collect_all_paths(root, ignored_dirs)
     files = [path for path in entries if path.is_file()]
 
     max_bytes = max(1, int(max_mb * 1024 * 1024))
 
+    if include_env_files:
+        excluded_files: set[str] = set()
+    else:
+        excluded_files = {name.lower() for name in DEFAULT_EXCLUDED_FILES}
+
     selected: list[tuple[Path, str]] = []
+    skipped: list[tuple[str, str]] = []
 
     for path in files:
+        relative = path.relative_to(root).as_posix()
+
+        # 0. Исключения по имени (.env и т.п.).
+        if path.name.lower() in excluded_files:
+            skipped.append(
+                (relative, "Исключён по умолчанию (может содержать секреты)")
+            )
+            continue
+
         suffix = path.suffix.lower()
 
         # 1. Фильтр по расширениям (если задан).
@@ -364,7 +455,6 @@ def build_context(
     ]
 
     included = 0
-    skipped: list[tuple[str, str]] = []
 
     for path, file_category in sorted(
         selected,
@@ -418,6 +508,12 @@ def build_context(
         mode = "EXCLUDE" if ext_exclude else "INCLUDE only"
         parts.append(
             f"Extension filter ({mode}): {', '.join(sorted(ext_filter))}"
+        )
+
+    if not include_env_files and excluded_files:
+        parts.append(
+            f"Excluded by default (secrets): "
+            f"{', '.join(sorted(excluded_files))}"
         )
 
     if skipped:

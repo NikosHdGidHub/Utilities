@@ -29,8 +29,8 @@ class App(tk.Tk):
         super().__init__()
 
         self.title(APP_TITLE)
-        self.geometry("1050x780")
-        self.minsize(900, 700)
+        self.geometry("1050x800")
+        self.minsize(900, 720)
 
         self.context = ""
 
@@ -45,6 +45,8 @@ class App(tk.Tk):
         self.doc_var = tk.BooleanVar(value=True)
         self.output_files_var = tk.BooleanVar(value=False)
         self.empty_var = tk.BooleanVar(value=False)
+        # По умолчанию .env* исключены — там могут быть секреты.
+        self.env_files_var = tk.BooleanVar(value=False)
 
         self.exclude_var = tk.StringVar(
             value=", ".join(sorted(core.DEFAULT_IGNORED_DIRS))
@@ -178,6 +180,7 @@ class App(tk.Tk):
             ("README / LICENSE / документацию", self.doc_var),
             ("Lock-файлы (package-lock и аналоги)", self.output_files_var),
             ("Включать пустые файлы", self.empty_var),
+            ("Включать .env-файлы (осторожно — секреты!)", self.env_files_var),
         ]:
             ttk.Checkbutton(
                 right,
@@ -496,6 +499,7 @@ class App(tk.Tk):
         ignored = core.parse_exclusions(self.exclude_var.get())
         ext_filter = core.parse_extensions(self.ext_filter_var.get())
         ext_exclude = self.ext_exclude_var.get()
+        include_env = self.env_files_var.get()
 
         self.log_msg("=== СБОРКА ===")
 
@@ -504,6 +508,12 @@ class App(tk.Tk):
             self.log_msg(
                 f"Фильтр расширений ({mode}): "
                 f"{', '.join(sorted(ext_filter))}"
+            )
+
+        if include_env:
+            self.log_msg(
+                "ВНИМАНИЕ: включена обработка .env-файлов "
+                "(могут содержать секреты)."
             )
 
         self.log_msg(f"Корень: {root}")
@@ -519,6 +529,7 @@ class App(tk.Tk):
                 ignored_dirs=ignored,
                 ext_filter=ext_filter,
                 ext_exclude=ext_exclude,
+                include_env_files=include_env,
             )
         except Exception as exc:
             self.status_var.set("Ошибка.")
