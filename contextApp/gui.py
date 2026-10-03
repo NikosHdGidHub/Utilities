@@ -29,10 +29,11 @@ class App(tk.Tk):
         super().__init__()
 
         self.title(APP_TITLE)
-        self.geometry("1100x820")
-        self.minsize(1000, 740)
+        self.geometry("1000x720")
+        self.minsize(900, 640)
 
         self.context = ""
+        self._advanced_window: tk.Toplevel | None = None
 
         self.root_var = tk.StringVar()
         self.output_var = tk.StringVar()
@@ -59,8 +60,23 @@ class App(tk.Tk):
 
         self.status_var = tk.StringVar(value="Выберите каталог проекта.")
         self.stats_var = tk.StringVar(value="Статистика: —")
+        self.advanced_summary_var = tk.StringVar(value="")
 
         self.setup_ui()
+
+        # Обновление строки-резюме при изменении фильтров.
+        self.ext_filter_var.trace_add(
+            "write", lambda *_: self._update_advanced_summary()
+        )
+        self.ext_exclude_var.trace_add(
+            "write", lambda *_: self._update_advanced_summary()
+        )
+        self.exclude_var.trace_add(
+            "write", lambda *_: self._update_advanced_summary()
+        )
+        self._update_advanced_summary()
+
+    # ---------- UI ----------
 
     def setup_ui(self) -> None:
         outer = ttk.Frame(self)
@@ -78,7 +94,7 @@ class App(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
 
-        frame = ttk.Frame(self.canvas, padding=15)
+        frame = ttk.Frame(self.canvas, padding=12)
         self._canvas_window = self.canvas.create_window(
             (0, 0),
             window=frame,
@@ -116,23 +132,27 @@ class App(tk.Tk):
 
         self.bind_all("<MouseWheel>", on_mousewheel)
 
+        # ----- Заголовок -----
+        header = ttk.Frame(frame)
+        header.pack(fill="x")
+
         ttk.Label(
-            frame,
+            header,
             text=APP_TITLE,
-            font=("Segoe UI", 17, "bold"),
+            font=("Segoe UI", 15, "bold"),
         ).pack(anchor="w")
 
         ttk.Label(
-            frame,
+            header,
             text=(
-                "Настройте состав контекста и одним кликом "
-                "соберите проект для ChatGPT."
+                "Настройте состав контекста и соберите проект "
+                "для ChatGPT в один клик."
             ),
-        ).pack(anchor="w", pady=(2, 12))
+        ).pack(anchor="w", pady=(2, 10))
 
         # ----- 1. Проект -----
-        project_group = ttk.LabelFrame(frame, text="1. Проект", padding=10)
-        project_group.pack(fill="x", pady=5)
+        project_group = ttk.LabelFrame(frame, text="1. Проект", padding=8)
+        project_group.pack(fill="x", pady=(0, 6))
 
         ttk.Label(project_group, text="Каталог:").grid(
             row=0,
@@ -159,8 +179,8 @@ class App(tk.Tk):
         project_group.columnconfigure(1, weight=1)
 
         # ----- 2. Что включать -----
-        include_group = ttk.LabelFrame(frame, text="2. Что включать", padding=10)
-        include_group.pack(fill="x", pady=5)
+        include_group = ttk.LabelFrame(frame, text="2. Что включать", padding=8)
+        include_group.pack(fill="x", pady=(0, 6))
 
         col1 = ttk.Frame(include_group)
         col2 = ttk.Frame(include_group)
@@ -177,7 +197,7 @@ class App(tk.Tk):
             ("Конфиги (.json, .yaml, .toml, .ini)", self.config_var),
         ]:
             ttk.Checkbutton(col1, text=text, variable=var).pack(
-                anchor="w", pady=2
+                anchor="w", pady=1
             )
 
         for text, var in [
@@ -187,7 +207,7 @@ class App(tk.Tk):
             ("Логи (.log)", self.log_var),
         ]:
             ttk.Checkbutton(col2, text=text, variable=var).pack(
-                anchor="w", pady=2
+                anchor="w", pady=1
             )
 
         for text, var in [
@@ -196,20 +216,21 @@ class App(tk.Tk):
             (".env-файлы (секреты!)", self.env_files_var),
         ]:
             ttk.Checkbutton(col3, text=text, variable=var).pack(
-                anchor="w", pady=2
+                anchor="w", pady=1
             )
 
+        # Пресеты + доп. настройки.
         presets = ttk.Frame(include_group)
         presets.grid(
             row=1,
             column=0,
             columnspan=3,
-            sticky="w",
-            pady=(12, 0),
+            sticky="ew",
+            pady=(10, 0),
         )
 
         ttk.Label(presets, text="Быстрые настройки:").pack(
-            side="left", padx=(0, 8)
+            side="left", padx=(0, 6)
         )
 
         ttk.Button(
@@ -224,7 +245,7 @@ class App(tk.Tk):
             command=self.preset_default,
         ).pack(side="left", padx=2)
 
-        # Максимальный размер файла.
+        # Размер файла.
         ttk.Label(
             include_group,
             text="Максимальный размер одного файла:",
@@ -232,7 +253,7 @@ class App(tk.Tk):
             row=2,
             column=0,
             sticky="w",
-            pady=(12, 0),
+            pady=(10, 0),
         )
 
         size_frame = ttk.Frame(include_group)
@@ -241,7 +262,7 @@ class App(tk.Tk):
             column=1,
             columnspan=2,
             sticky="w",
-            pady=(12, 0),
+            pady=(10, 0),
         )
 
         ttk.Spinbox(
@@ -255,87 +276,31 @@ class App(tk.Tk):
 
         ttk.Label(size_frame, text="MB").pack(side="left", padx=5)
 
-        # ----- 3. Фильтр по расширениям -----
-        filter_group = ttk.LabelFrame(
-            frame,
-            text="3. Фильтр по расширениям (необязательно)",
-            padding=10,
+        # Кнопка + резюме доп. настроек.
+        advanced_row = ttk.Frame(include_group)
+        advanced_row.grid(
+            row=3,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(10, 0),
         )
-        filter_group.pack(fill="x", pady=5)
-
-        ttk.Label(
-            filter_group,
-            text=(
-                "Пусто — фильтр выключен. Иначе: без галочки — попадут "
-                "только файлы этих расширений (и только включённых "
-                "категорий), с галочкой — наоборот, будут исключены."
-            ),
-            wraplength=1020,
-            justify="left",
-        ).pack(anchor="w")
-
-        filter_row = ttk.Frame(filter_group)
-        filter_row.pack(fill="x", pady=(4, 4))
-
-        ttk.Entry(
-            filter_row,
-            textvariable=self.ext_filter_var,
-        ).pack(
-            side="left",
-            fill="x",
-            expand=True,
-        )
-
-        ttk.Checkbutton(
-            filter_row,
-            text="Исключать выбранные",
-            variable=self.ext_exclude_var,
-        ).pack(side="left", padx=(8, 0))
-
-        quick = ttk.Frame(filter_group)
-        quick.pack(fill="x")
-
-        ttk.Label(quick, text="Быстро:").pack(side="left")
-
-        for ext in QUICK_EXTENSIONS:
-            ttk.Button(
-                quick,
-                text=ext,
-                width=6,
-                command=lambda value=ext: self.add_ext(value),
-            ).pack(side="left", padx=2)
 
         ttk.Button(
-            quick,
-            text="Очистить",
-            command=lambda: self.ext_filter_var.set(""),
-        ).pack(side="left", padx=(10, 0))
-
-        # ----- 4. Исключить каталоги -----
-        exclude_group = ttk.LabelFrame(
-            frame,
-            text="4. Исключить каталоги",
-            padding=10,
-        )
-        exclude_group.pack(fill="x", pady=5)
-
-        ttk.Entry(
-            exclude_group,
-            textvariable=self.exclude_var,
-        ).pack(fill="x")
+            advanced_row,
+            text="⚙  Дополнительные настройки…",
+            command=self.open_advanced_settings,
+        ).pack(side="left")
 
         ttk.Label(
-            exclude_group,
-            text="Названия через запятую: node_modules, .git, venv, dist …",
-        ).pack(anchor="w", pady=(4, 0))
+            advanced_row,
+            textvariable=self.advanced_summary_var,
+            foreground="#666666",
+        ).pack(side="left", padx=(12, 0))
 
-        # ----- 5. Результат -----
-        result_group = ttk.LabelFrame(
-            frame,
-            text="5. Результат",
-            padding=10,
-        )
-        result_group.pack(fill="x", pady=5)
+        # ----- 3. Результат -----
+        result_group = ttk.LabelFrame(frame, text="3. Результат", padding=8)
+        result_group.pack(fill="x", pady=(0, 6))
 
         ttk.Label(result_group, text="TXT:").grid(
             row=0,
@@ -363,7 +328,7 @@ class App(tk.Tk):
 
         # ----- Действия -----
         actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=8)
+        actions.pack(fill="x", pady=(2, 6))
 
         ttk.Button(
             actions,
@@ -375,7 +340,7 @@ class App(tk.Tk):
             actions,
             text="📋 Копировать",
             command=self.copy,
-        ).pack(side="left", padx=7)
+        ).pack(side="left", padx=6)
 
         ttk.Button(
             actions,
@@ -387,44 +352,209 @@ class App(tk.Tk):
             actions,
             text="📂 Открыть папку",
             command=self.open_folder,
-        ).pack(side="left", padx=7)
+        ).pack(side="left", padx=6)
 
+        # ----- Статистика -----
         ttk.Label(
             frame,
             textvariable=self.stats_var,
-        ).pack(fill="x", pady=(2, 5))
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
 
         # ----- Журнал -----
-        log_frame = ttk.LabelFrame(
-            frame,
-            text="Журнал",
-            padding=6,
-        )
+        log_frame = ttk.LabelFrame(frame, text="Журнал", padding=4)
         log_frame.pack(fill="both", expand=True)
 
         self.log = ScrolledText(
             log_frame,
-            height=12,
+            height=6,
             wrap="word",
             font=("Consolas", 9),
             state="disabled",
         )
         self.log.pack(fill="both", expand=True)
 
+        # ----- Статус -----
         ttk.Label(
             frame,
             textvariable=self.status_var,
             relief="sunken",
             anchor="w",
-            padding=5,
-        ).pack(fill="x", pady=(6, 0))
+            padding=4,
+        ).pack(fill="x", pady=(4, 0))
 
         self.log_msg("Приложение готово.")
 
-    # ---- Пресеты ----
+    # ---------- Дополнительные настройки ----------
+
+    def _update_advanced_summary(self) -> None:
+        ext = self.ext_filter_var.get().strip()
+
+        if not ext:
+            ext_part = "расширения: все"
+        elif self.ext_exclude_var.get():
+            ext_part = f"расширения: исключая {ext}"
+        else:
+            ext_part = f"расширения: только {ext}"
+
+        count = len(core.parse_exclusions(self.exclude_var.get()))
+        excl_part = f"исключено папок: {count}"
+
+        self.advanced_summary_var.set(f"{ext_part}  •  {excl_part}")
+
+    def open_advanced_settings(self) -> None:
+        existing = self._advanced_window
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        win = tk.Toplevel(self)
+        win.title("Дополнительные настройки")
+        win.transient(self)
+        win.resizable(False, False)
+        self._advanced_window = win
+
+        container = ttk.Frame(win, padding=15)
+        container.pack(fill="both", expand=True)
+
+        ttk.Label(
+            container,
+            text="Дополнительные настройки",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w")
+
+        ttk.Label(
+            container,
+            text=(
+                "Параметры не обязательные — по умолчанию работают "
+                "разумные значения. Изменения применяются сразу."
+            ),
+            foreground="#666666",
+        ).pack(anchor="w", pady=(2, 12))
+
+        # --- Фильтр по расширениям ---
+        filter_group = ttk.LabelFrame(
+            container,
+            text="Фильтр по расширениям",
+            padding=10,
+        )
+        filter_group.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(
+            filter_group,
+            text=(
+                "Пусто — фильтр выключен. Иначе: без галочки — попадут "
+                "только файлы этих расширений (и только включённых "
+                "категорий), с галочкой — наоборот, будут исключены."
+            ),
+            wraplength=640,
+            justify="left",
+        ).pack(anchor="w")
+
+        filter_row = ttk.Frame(filter_group)
+        filter_row.pack(fill="x", pady=(6, 4))
+
+        ttk.Entry(
+            filter_row,
+            textvariable=self.ext_filter_var,
+        ).pack(side="left", fill="x", expand=True)
+
+        ttk.Checkbutton(
+            filter_row,
+            text="Исключать выбранные",
+            variable=self.ext_exclude_var,
+        ).pack(side="left", padx=(8, 0))
+
+        quick = ttk.Frame(filter_group)
+        quick.pack(fill="x", pady=(2, 0))
+
+        ttk.Label(quick, text="Быстро:").pack(side="left")
+
+        for ext in QUICK_EXTENSIONS:
+            ttk.Button(
+                quick,
+                text=ext,
+                width=6,
+                command=lambda value=ext: self.add_ext(value),
+            ).pack(side="left", padx=2)
+
+        ttk.Button(
+            quick,
+            text="Очистить",
+            command=lambda: self.ext_filter_var.set(""),
+        ).pack(side="left", padx=(10, 0))
+
+        # --- Исключённые каталоги ---
+        exclude_group = ttk.LabelFrame(
+            container,
+            text="Исключённые каталоги",
+            padding=10,
+        )
+        exclude_group.pack(fill="x", pady=(0, 10))
+
+        ttk.Entry(
+            exclude_group,
+            textvariable=self.exclude_var,
+        ).pack(fill="x")
+
+        ttk.Label(
+            exclude_group,
+            text="Названия через запятую: node_modules, .git, venv, dist …",
+            foreground="#666666",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # --- Кнопки ---
+        btn_row = ttk.Frame(container)
+        btn_row.pack(fill="x", pady=(6, 0))
+
+        ttk.Button(
+            btn_row,
+            text="Сбросить расширения",
+            command=self._reset_extension_filter,
+        ).pack(side="left")
+
+        ttk.Button(
+            btn_row,
+            text="Сбросить исключения",
+            command=self._reset_excluded_dirs,
+        ).pack(side="left", padx=(6, 0))
+
+        ttk.Button(
+            btn_row,
+            text="Готово",
+            command=win.destroy,
+        ).pack(side="right")
+
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+        # Центрируем относительно главного окна.
+        win.update_idletasks()
+        w = win.winfo_width()
+        h = win.winfo_height()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - h) // 3)
+        win.geometry(f"+{x}+{y}")
+
+        win.grab_set()
+        win.focus_set()
+
+    def _reset_extension_filter(self) -> None:
+        self.ext_filter_var.set("")
+        self.ext_exclude_var.set(False)
+        self.log_msg("Сброшен фильтр расширений.")
+
+    def _reset_excluded_dirs(self) -> None:
+        self.exclude_var.set(", ".join(sorted(core.DEFAULT_IGNORED_DIRS)))
+        self.log_msg("Сброшен список исключённых каталогов.")
+
+    # ---------- Пресеты ----------
 
     def preset_only_tree(self) -> None:
-        """Снять всё, кроме структуры каталога."""
         for var in (
             self.code_var,
             self.style_var,
@@ -443,7 +573,6 @@ class App(tk.Tk):
         self.log_msg("Пресет: только структура каталога.")
 
     def preset_default(self) -> None:
-        """Вернуть исходный набор галочек."""
         self.tree_var.set(True)
         self.code_var.set(True)
         self.style_var.set(True)
@@ -457,7 +586,7 @@ class App(tk.Tk):
         self.env_files_var.set(False)
         self.log_msg("Пресет: настройки по умолчанию.")
 
-    # ---- Утилиты ----
+    # ---------- Утилиты ----------
 
     def log_msg(self, msg: str) -> None:
         self.log.configure(state="normal")
@@ -558,7 +687,7 @@ class App(tk.Tk):
             )
             return False
 
-    # ---- Действия ----
+    # ---------- Действия ----------
 
     def build(self) -> None:
         try:
