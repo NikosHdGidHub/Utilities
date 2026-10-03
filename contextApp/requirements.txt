@@ -1,0 +1,3 @@
+# Project Context Builder
+# Python standard library only.
+# Tkinter входит в стандартную поставку Python для Windows.

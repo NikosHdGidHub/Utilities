@@ -1,0 +1,31 @@
+# Виртуальное окружение
+.venv/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller
+build/
+dist/
+
+# Файлы PyInstaller
+# main.spec можно НЕ игнорировать — ниже объясню почему
+
+# Настройки VS Code
+.vscode/
+
+# Переменные окружения и секреты
+.env
+.env.*
+
+# Логи
+*.log
+
+# Системные файлы Windows
+Thumbs.db
+Desktop.ini
+
+
+contextApp_context.txt
