@@ -29,8 +29,8 @@ class App(tk.Tk):
         super().__init__()
 
         self.title(APP_TITLE)
-        self.geometry("1050x800")
-        self.minsize(900, 720)
+        self.geometry("1100x820")
+        self.minsize(1000, 740)
 
         self.context = ""
 
@@ -40,9 +40,12 @@ class App(tk.Tk):
 
         self.tree_var = tk.BooleanVar(value=True)
         self.code_var = tk.BooleanVar(value=True)
+        self.style_var = tk.BooleanVar(value=True)
         self.config_var = tk.BooleanVar(value=True)
-        self.text_var = tk.BooleanVar(value=True)
         self.doc_var = tk.BooleanVar(value=True)
+        self.text_var = tk.BooleanVar(value=True)
+        self.data_var = tk.BooleanVar(value=True)
+        self.log_var = tk.BooleanVar(value=True)
         self.output_files_var = tk.BooleanVar(value=False)
         self.empty_var = tk.BooleanVar(value=False)
         # По умолчанию .env* исключены — там могут быть секреты.
@@ -103,7 +106,6 @@ class App(tk.Tk):
                     return
                 current = current.master
 
-            # Универсально для Windows / macOS / Linux.
             delta = event.delta
             if abs(delta) >= 120:
                 steps = delta // 120
@@ -128,6 +130,7 @@ class App(tk.Tk):
             ),
         ).pack(anchor="w", pady=(2, 12))
 
+        # ----- 1. Проект -----
         project_group = ttk.LabelFrame(frame, text="1. Проект", padding=10)
         project_group.pack(fill="x", pady=5)
 
@@ -155,55 +158,90 @@ class App(tk.Tk):
 
         project_group.columnconfigure(1, weight=1)
 
+        # ----- 2. Что включать -----
         include_group = ttk.LabelFrame(frame, text="2. Что включать", padding=10)
         include_group.pack(fill="x", pady=5)
 
-        left = ttk.Frame(include_group)
-        right = ttk.Frame(include_group)
+        col1 = ttk.Frame(include_group)
+        col2 = ttk.Frame(include_group)
+        col3 = ttk.Frame(include_group)
 
-        left.grid(row=0, column=0, sticky="nw", padx=(0, 40))
-        right.grid(row=0, column=1, sticky="nw")
-
-        for text, var in [
-            ("Полную структуру каталога", self.tree_var),
-            ("Исходный код", self.code_var),
-            ("Конфигурации", self.config_var),
-            ("Обычные текстовые файлы", self.text_var),
-        ]:
-            ttk.Checkbutton(
-                left,
-                text=text,
-                variable=var,
-            ).pack(anchor="w", pady=2)
+        col1.grid(row=0, column=0, sticky="nw", padx=(0, 30))
+        col2.grid(row=0, column=1, sticky="nw", padx=(0, 30))
+        col3.grid(row=0, column=2, sticky="nw")
 
         for text, var in [
-            ("README / LICENSE / документацию", self.doc_var),
-            ("Lock-файлы (package-lock и аналоги)", self.output_files_var),
-            ("Включать пустые файлы", self.empty_var),
-            ("Включать .env-файлы (осторожно — секреты!)", self.env_files_var),
+            ("Структура каталога", self.tree_var),
+            ("Код (.py, .js, .ts, .go, .rs …)", self.code_var),
+            ("Стили (.css, .scss, .less, .svg)", self.style_var),
+            ("Конфиги (.json, .yaml, .toml, .ini)", self.config_var),
         ]:
-            ttk.Checkbutton(
-                right,
-                text=text,
-                variable=var,
-            ).pack(anchor="w", pady=2)
+            ttk.Checkbutton(col1, text=text, variable=var).pack(
+                anchor="w", pady=2
+            )
 
+        for text, var in [
+            ("Документация (.md, README, LICENSE)", self.doc_var),
+            ("Текст (.txt)", self.text_var),
+            ("Данные (.csv, .tsv, .jsonl)", self.data_var),
+            ("Логи (.log)", self.log_var),
+        ]:
+            ttk.Checkbutton(col2, text=text, variable=var).pack(
+                anchor="w", pady=2
+            )
+
+        for text, var in [
+            ("Lock-файлы (package-lock.json, …)", self.output_files_var),
+            ("Пустые файлы", self.empty_var),
+            (".env-файлы (секреты!)", self.env_files_var),
+        ]:
+            ttk.Checkbutton(col3, text=text, variable=var).pack(
+                anchor="w", pady=2
+            )
+
+        presets = ttk.Frame(include_group)
+        presets.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(12, 0),
+        )
+
+        ttk.Label(presets, text="Быстрые настройки:").pack(
+            side="left", padx=(0, 8)
+        )
+
+        ttk.Button(
+            presets,
+            text="Только структура",
+            command=self.preset_only_tree,
+        ).pack(side="left", padx=2)
+
+        ttk.Button(
+            presets,
+            text="По умолчанию",
+            command=self.preset_default,
+        ).pack(side="left", padx=2)
+
+        # Максимальный размер файла.
         ttk.Label(
             include_group,
             text="Максимальный размер одного файла:",
         ).grid(
-            row=1,
+            row=2,
             column=0,
             sticky="w",
-            pady=(10, 0),
+            pady=(12, 0),
         )
 
         size_frame = ttk.Frame(include_group)
         size_frame.grid(
-            row=1,
+            row=2,
             column=1,
+            columnspan=2,
             sticky="w",
-            pady=(10, 0),
+            pady=(12, 0),
         )
 
         ttk.Spinbox(
@@ -215,11 +253,9 @@ class App(tk.Tk):
             textvariable=self.max_var,
         ).pack(side="left")
 
-        ttk.Label(size_frame, text="MB").pack(
-            side="left",
-            padx=5,
-        )
+        ttk.Label(size_frame, text="MB").pack(side="left", padx=5)
 
+        # ----- 3. Фильтр по расширениям -----
         filter_group = ttk.LabelFrame(
             frame,
             text="3. Фильтр по расширениям (необязательно)",
@@ -234,7 +270,7 @@ class App(tk.Tk):
                 "только файлы этих расширений (и только включённых "
                 "категорий), с галочкой — наоборот, будут исключены."
             ),
-            wraplength=980,
+            wraplength=1020,
             justify="left",
         ).pack(anchor="w")
 
@@ -275,6 +311,7 @@ class App(tk.Tk):
             command=lambda: self.ext_filter_var.set(""),
         ).pack(side="left", padx=(10, 0))
 
+        # ----- 4. Исключить каталоги -----
         exclude_group = ttk.LabelFrame(
             frame,
             text="4. Исключить каталоги",
@@ -292,6 +329,7 @@ class App(tk.Tk):
             text="Названия через запятую: node_modules, .git, venv, dist …",
         ).pack(anchor="w", pady=(4, 0))
 
+        # ----- 5. Результат -----
         result_group = ttk.LabelFrame(
             frame,
             text="5. Результат",
@@ -323,6 +361,7 @@ class App(tk.Tk):
 
         result_group.columnconfigure(1, weight=1)
 
+        # ----- Действия -----
         actions = ttk.Frame(frame)
         actions.pack(fill="x", pady=8)
 
@@ -355,6 +394,7 @@ class App(tk.Tk):
             textvariable=self.stats_var,
         ).pack(fill="x", pady=(2, 5))
 
+        # ----- Журнал -----
         log_frame = ttk.LabelFrame(
             frame,
             text="Журнал",
@@ -381,11 +421,48 @@ class App(tk.Tk):
 
         self.log_msg("Приложение готово.")
 
+    # ---- Пресеты ----
+
+    def preset_only_tree(self) -> None:
+        """Снять всё, кроме структуры каталога."""
+        for var in (
+            self.code_var,
+            self.style_var,
+            self.config_var,
+            self.doc_var,
+            self.text_var,
+            self.data_var,
+            self.log_var,
+            self.output_files_var,
+            self.empty_var,
+            self.env_files_var,
+        ):
+            var.set(False)
+
+        self.tree_var.set(True)
+        self.log_msg("Пресет: только структура каталога.")
+
+    def preset_default(self) -> None:
+        """Вернуть исходный набор галочек."""
+        self.tree_var.set(True)
+        self.code_var.set(True)
+        self.style_var.set(True)
+        self.config_var.set(True)
+        self.doc_var.set(True)
+        self.text_var.set(True)
+        self.data_var.set(True)
+        self.log_var.set(True)
+        self.output_files_var.set(False)
+        self.empty_var.set(False)
+        self.env_files_var.set(False)
+        self.log_msg("Пресет: настройки по умолчанию.")
+
+    # ---- Утилиты ----
+
     def log_msg(self, msg: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", msg + "\n")
         self.log.configure(state="disabled")
-        # Прокрутка — отложенно, чтобы не тормозить на длинных сборках.
         self.log.after_idle(self.log.see, "end")
 
     def add_ext(self, ext: str) -> None:
@@ -481,6 +558,8 @@ class App(tk.Tk):
             )
             return False
 
+    # ---- Действия ----
+
     def build(self) -> None:
         try:
             root, max_mb = self.get_settings()
@@ -490,9 +569,12 @@ class App(tk.Tk):
 
         enabled_categories = {
             "code": self.code_var.get(),
+            "style": self.style_var.get(),
             "config": self.config_var.get(),
-            "text": self.text_var.get(),
             "document": self.doc_var.get(),
+            "text": self.text_var.get(),
+            "data": self.data_var.get(),
+            "log": self.log_var.get(),
             "output": self.output_files_var.get(),
         }
 

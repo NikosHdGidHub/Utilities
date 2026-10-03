@@ -23,8 +23,7 @@ DEFAULT_IGNORED_DIRS = {
     "coverage",
 }
 
-# Файлы, которые исключаются по умолчанию.
-# Это не про папки! .env чаще всего именно файл с секретами.
+# Файлы, которые исключаются по умолчанию (могут содержать секреты).
 DEFAULT_EXCLUDED_FILES = {
     ".env",
     ".env.local",
@@ -38,7 +37,7 @@ DEFAULT_EXCLUDED_FILES = {
 CODE_EXTENSIONS = {
     ".py", ".pyw", ".pyi",
     ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
-    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".html", ".htm",
     ".vue", ".svelte",
     ".java", ".kt", ".kts", ".groovy",
     ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh",
@@ -50,6 +49,11 @@ CODE_EXTENSIONS = {
     ".sql",
 }
 
+STYLE_EXTENSIONS = {
+    ".css", ".scss", ".sass", ".less", ".styl",
+    ".svg",  # SVG — текстовый векторный формат, часто идёт рядом со стилями
+}
+
 # Дополнительные расширения кода — часто встречаются, но не в основных наборах.
 EXTRA_CODE_EXTENSIONS = {
     ".spec",     # PyInstaller (это Python-код)
@@ -59,7 +63,7 @@ EXTRA_CODE_EXTENSIONS = {
 }
 
 CONFIG_EXTENSIONS = {
-    ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
     ".conf", ".properties", ".xml",
 }
 
@@ -80,22 +84,51 @@ DOTFILE_CONFIG_NAMES = {
     ".clang-format",
 }
 
-TEXT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".rst", ".adoc", ".log", ".csv"
+# Документация.
+DOCUMENT_EXTENSIONS = {
+    ".md", ".markdown", ".rst", ".adoc",
 }
 
 DOCUMENT_NAMES = {
     "README", "README.md", "README.txt",
-    "LICENSE", "LICENSE.txt"
+    "LICENSE", "LICENSE.txt",
+}
+
+# Простой текст.
+TEXT_EXTENSIONS = {
+    ".txt",
+}
+
+# Данные — «плоские» табличные и построчные форматы.
+DATA_EXTENSIONS = {
+    ".csv", ".tsv", ".jsonl", ".ndjson",
+}
+
+# Логи.
+LOG_EXTENSIONS = {
+    ".log",
 }
 
 OUTPUT_NAMES = {
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-    "poetry.lock", "Pipfile.lock"
+    "poetry.lock", "Pipfile.lock",
 }
 
 SPECIAL_CODE_NAMES = {
-    "Dockerfile", "Makefile", "CMakeLists.txt", "Procfile"
+    "Dockerfile", "Makefile", "CMakeLists.txt", "Procfile",
+}
+
+# Человекочитаемые ярлыки категорий для COLLECTION SUMMARY.
+# Английский — потому что контекст читает ChatGPT, ему так проще.
+CATEGORY_LABELS = {
+    "code": "Code (.py, .js, .ts, .go, .rs, ...)",
+    "style": "Styles (.css, .scss, .less, .svg)",
+    "config": "Configs (.json, .yaml, .toml, .ini, .gitignore)",
+    "document": "Documentation (.md, README, LICENSE)",
+    "text": "Text (.txt)",
+    "data": "Data (.csv, .tsv, .jsonl)",
+    "log": "Logs (.log)",
+    "output": "Lock files (package-lock.json, poetry.lock, ...)",
 }
 
 
@@ -110,8 +143,7 @@ def category(path: Path) -> str | None:
     name = path.name
     suffix = path.suffix.lower()
 
-    # .env* — конфигурация. Исключение по умолчанию делается отдельно,
-    # в build_context, чтобы категория оставалась логичной.
+    # .env* — конфигурация. Отдельное исключение делается в build_context.
     if _is_env_like(name):
         return "config"
 
@@ -122,6 +154,9 @@ def category(path: Path) -> str | None:
     ):
         return "code"
 
+    if suffix in STYLE_EXTENSIONS:
+        return "style"
+
     if (
         name in DOTFILE_CONFIG_NAMES
         or suffix in CONFIG_EXTENSIONS
@@ -129,7 +164,7 @@ def category(path: Path) -> str | None:
     ):
         return "config"
 
-    if name in DOCUMENT_NAMES:
+    if name in DOCUMENT_NAMES or suffix in DOCUMENT_EXTENSIONS:
         return "document"
 
     if name in OUTPUT_NAMES:
@@ -137,6 +172,12 @@ def category(path: Path) -> str | None:
 
     if suffix in TEXT_EXTENSIONS:
         return "text"
+
+    if suffix in DATA_EXTENSIONS:
+        return "data"
+
+    if suffix in LOG_EXTENSIONS:
+        return "log"
 
     if is_probably_text_file(path):
         return "text"
@@ -149,17 +190,16 @@ def is_probably_text_file(path: Path) -> bool:
     Грубая проверка: можно ли считать файл текстовым.
 
     Для известных расширений сразу True. Для всех остальных —
-    читаем «шапку» файла (а не только файлы без расширения, как раньше).
+    читаем «шапку» файла.
     """
     name = path.name
 
-    if name in DOCUMENT_NAMES or name in OUTPUT_NAMES:
-        return True
-
-    if name in SPECIAL_CODE_NAMES:
-        return True
-
-    if name in DOTFILE_CONFIG_NAMES:
+    if (
+        name in DOCUMENT_NAMES
+        or name in OUTPUT_NAMES
+        or name in SPECIAL_CODE_NAMES
+        or name in DOTFILE_CONFIG_NAMES
+    ):
         return True
 
     if _is_env_like(name):
@@ -169,21 +209,23 @@ def is_probably_text_file(path: Path) -> bool:
 
     if suffix in (
         CODE_EXTENSIONS
+        | STYLE_EXTENSIONS
         | CONFIG_EXTENSIONS
+        | DOCUMENT_EXTENSIONS
         | TEXT_EXTENSIONS
+        | DATA_EXTENSIONS
+        | LOG_EXTENSIONS
         | EXTRA_CODE_EXTENSIONS
         | EXTRA_CONFIG_EXTENSIONS
     ):
         return True
 
-    # Незнакомое расширение — заглядываем в содержимое.
     try:
         with path.open("rb") as f:
             sample = f.read(8192)
     except OSError:
         return False
 
-    # Именно нулевой байт, а не литерал "\x00" из четырёх символов.
     if b"\x00" in sample:
         return False
 
@@ -314,7 +356,6 @@ def read_text_file(
             except UnicodeDecodeError:
                 continue
 
-        # Последняя попытка: декодируем с заменами и оцениваем качество.
         decoded = raw.decode("utf-8", errors="replace")
 
         if decoded:
@@ -401,7 +442,6 @@ def build_context(
     for path in files:
         relative = path.relative_to(root).as_posix()
 
-        # 0. Исключения по имени (.env и т.п.).
         if path.name.lower() in excluded_files:
             skipped.append(
                 (relative, "Исключён по умолчанию (может содержать секреты)")
@@ -410,7 +450,6 @@ def build_context(
 
         suffix = path.suffix.lower()
 
-        # 1. Фильтр по расширениям (если задан).
         if ext_filter:
             if ext_exclude:
                 if suffix in ext_filter:
@@ -419,7 +458,6 @@ def build_context(
                 if suffix not in ext_filter:
                     continue
 
-        # 2. Фильтр по категориям.
         file_category = category(path)
         if file_category is None:
             continue
@@ -492,27 +530,49 @@ def build_context(
 
         included += 1
 
+    # ---------------- COLLECTION SUMMARY ----------------
     parts += [
         "",
         "#" * 110,
         "# COLLECTION SUMMARY",
         "#" * 110,
-        f"Total entries in tree: {len(entries)}",
-        f"Total files: {len(files)}",
-        f"Selected files: {len(selected)}",
-        f"Included contents: {included}",
-        f"Skipped: {len(skipped)}",
+        "",
+        "Settings:",
+        f"  Directory tree: {'yes' if include_tree else 'no'}",
+    ]
+
+    for key, label in CATEGORY_LABELS.items():
+        enabled = enabled_categories.get(key, False)
+        parts.append(f"  {label}: {'yes' if enabled else 'no'}")
+
+    parts += [
+        f"  Empty files: {'yes' if include_empty else 'no'}",
+        f"  .env files (secrets!): {'yes' if include_env_files else 'no'}",
+        f"  Max file size: {max_mb:g} MB",
     ]
 
     if ext_filter:
         mode = "EXCLUDE" if ext_exclude else "INCLUDE only"
         parts.append(
-            f"Extension filter ({mode}): {', '.join(sorted(ext_filter))}"
+            f"  Extension filter ({mode}): "
+            f"{', '.join(sorted(ext_filter))}"
         )
+    else:
+        parts.append("  Extension filter: off")
+
+    parts += [
+        "",
+        "Statistics:",
+        f"  Total entries in tree: {len(entries)}",
+        f"  Total files: {len(files)}",
+        f"  Selected files: {len(selected)}",
+        f"  Included contents: {included}",
+        f"  Skipped: {len(skipped)}",
+    ]
 
     if not include_env_files and excluded_files:
         parts.append(
-            f"Excluded by default (secrets): "
+            f"  Excluded by default (secrets): "
             f"{', '.join(sorted(excluded_files))}"
         )
 
