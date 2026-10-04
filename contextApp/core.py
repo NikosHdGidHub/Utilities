@@ -189,12 +189,7 @@ def category(path: Path) -> str | None:
 
 
 def is_probably_text_file(path: Path) -> bool:
-    """
-    Грубая проверка: можно ли считать файл текстовым.
-
-    Для известных расширений сразу True. Для всех остальных —
-    читаем «шапку» файла.
-    """
+    """Грубая проверка: можно ли считать файл текстовым."""
     name = path.name
 
     if (
@@ -409,42 +404,33 @@ def parse_extensions(text: str) -> set[str]:
     return result
 
 
-def build_context(
+def list_candidate_files(
     root: Path,
-    include_tree: bool,
     enabled_categories: dict[str, bool],
-    include_empty: bool,
-    max_mb: float,
     ignored_dirs: set[str],
     ext_filter: set[str] | None = None,
     ext_exclude: bool = False,
     include_env_files: bool = False,
-) -> tuple[str, dict]:
+    entries: list[Path] | None = None,
+) -> list[tuple[Path, str]]:
     """
-    Собирает итоговый текст контекста и статистику.
+    Возвращает (path, category) для файлов, попадающих в контекст
+    при текущих настройках. Содержимое файлов не читается — только
+    фильтрация по имени/расширению/категории.
 
-    Фильтр категорий и фильтр расширений применяются вместе:
-    файл должен подойти И по категории, И по расширению.
-
-    Файлы из DEFAULT_EXCLUDED_FILES (в первую очередь .env*) не попадают
-    в контекст, если include_env_files=False.
+    Используется и GUI-пикером, и build_context — чтобы правила
+    отбора были ровно одни и те же.
     """
-    entries = collect_all_paths(root, ignored_dirs)
+    if entries is None:
+        entries = collect_all_paths(root, ignored_dirs)
+
     files = [path for path in entries if path.is_file()]
-
-    max_bytes = max(1, int(max_mb * 1024 * 1024))
 
     if include_env_files:
         excluded_files: set[str] = set()
     else:
         excluded_files = {name.lower() for name in DEFAULT_EXCLUDED_FILES}
 
-    selected: list[tuple[Path, str]] = []
-    skipped: list[tuple[str, str]] = []
-
-    # Умный override (вариант C): если пользователь снял ВСЕ галочки
-    # категорий и включил фильтр в режиме INCLUDE only — считаем, что
-    # он хочет ровно эти расширения, и категории не проверяем.
     any_category_enabled = any(enabled_categories.values())
     override_mode = (
         bool(ext_filter)
@@ -452,22 +438,16 @@ def build_context(
         and not any_category_enabled
     )
 
-    for path in files:
-        relative = path.relative_to(root).as_posix()
+    result: list[tuple[Path, str]] = []
 
+    for path in files:
         if path.name.lower() in excluded_files:
-            skipped.append(
-                (relative, "Исключён по умолчанию (может содержать секреты)")
-            )
             continue
 
         name_lower = path.name.lower()
         suffix = path.suffix.lower()
 
         if ext_filter:
-            # Матчим и по расширению (.py, .css), и по имени файла
-            # (.gitignore, .editorconfig, Dockerfile и т.п. — у них
-            # suffix пустой, но имя осмысленное).
             matched = (
                 suffix in ext_filter
                 or name_lower in ext_filter
@@ -480,22 +460,81 @@ def build_context(
                 if not matched:
                     continue
 
-        if override_mode:
-            # Категории отключены — включаем всё, что прошло фильтр.
-            file_category = category(path)
-            if file_category is None:
-                continue
-            selected.append((path, file_category))
-            continue
-
         file_category = category(path)
         if file_category is None:
+            continue
+
+        if override_mode:
+            result.append((path, file_category))
             continue
 
         if not enabled_categories.get(file_category, False):
             continue
 
-        selected.append((path, file_category))
+        result.append((path, file_category))
+
+    return result
+
+
+def build_context(
+    root: Path,
+    include_tree: bool,
+    enabled_categories: dict[str, bool],
+    include_empty: bool,
+    max_mb: float,
+    ignored_dirs: set[str],
+    ext_filter: set[str] | None = None,
+    ext_exclude: bool = False,
+    include_env_files: bool = False,
+    file_whitelist: set[Path] | None = None,
+) -> tuple[str, dict]:
+    """
+    Собирает итоговый текст контекста и статистику.
+
+    file_whitelist — необязательный набор путей (абсолютных). Если задан,
+    в контекст попадут только файлы из него (пересечение с обычными
+    фильтрами). Пустое множество = «ничего не выбрано вручную».
+    """
+    entries = collect_all_paths(root, ignored_dirs)
+    files = [path for path in entries if path.is_file()]
+
+    max_bytes = max(1, int(max_mb * 1024 * 1024))
+
+    candidates = list_candidate_files(
+        root=root,
+        enabled_categories=enabled_categories,
+        ignored_dirs=ignored_dirs,
+        ext_filter=ext_filter,
+        ext_exclude=ext_exclude,
+        include_env_files=include_env_files,
+        entries=entries,
+    )
+
+    manual_selection_active = file_whitelist is not None
+    if file_whitelist is not None:
+        candidates = [
+            (p, c) for p, c in candidates if p in file_whitelist
+        ]
+
+    selected = candidates
+    skipped: list[tuple[str, str]] = []
+
+    # Отдельно показываем .env-файлы как пропущенные.
+    if not include_env_files:
+        excluded_names = {name.lower() for name in DEFAULT_EXCLUDED_FILES}
+        for path in files:
+            if path.name.lower() in excluded_names:
+                rel = path.relative_to(root).as_posix()
+                skipped.append(
+                    (rel, "Исключён по умолчанию (может содержать секреты)")
+                )
+
+    any_category_enabled = any(enabled_categories.values())
+    override_mode = (
+        bool(ext_filter)
+        and not ext_exclude
+        and not any_category_enabled
+    )
 
     parts = [
         "# PROJECT CONTEXT",
@@ -595,6 +634,12 @@ def build_context(
     else:
         parts.append("  Extension filter: off")
 
+    if manual_selection_active:
+        parts.append(
+            f"  Manual file selection: {len(candidates)} file(s) "
+            "(whitelist from file picker)"
+        )
+
     parts += [
         "",
         "Statistics:",
@@ -605,11 +650,13 @@ def build_context(
         f"  Skipped: {len(skipped)}",
     ]
 
-    if not include_env_files and excluded_files:
-        parts.append(
-            f"  Excluded by default (secrets): "
-            f"{', '.join(sorted(excluded_files))}"
-        )
+    if not include_env_files:
+        excluded_names = {name.lower() for name in DEFAULT_EXCLUDED_FILES}
+        if excluded_names:
+            parts.append(
+                "  Excluded by default (secrets): "
+                f"{', '.join(sorted(excluded_names))}"
+            )
 
     if skipped:
         parts += [
@@ -633,6 +680,7 @@ def build_context(
     }
 
     return output, stats
+
 
 # =====================================================================
 # Settings (JSON persistence)
@@ -729,9 +777,6 @@ def _merge_settings(defaults: dict, data: dict) -> dict:
             if not isinstance(value, dict):
                 result[key] = default_value
             elif not default_value:
-                # Пустой шаблон — значит словарь произвольной формы
-                # (например, карта «проект → последний путь сохранения»).
-                # Берём как есть, фильтруя неверные типы.
                 result[key] = {
                     k: v for k, v in value.items()
                     if isinstance(k, str) and isinstance(v, str)
@@ -748,7 +793,6 @@ def _merge_settings(defaults: dict, data: dict) -> dict:
                     if isinstance(item, str) and item.strip()
                 ]
 
-                # Дедупликация с сохранением порядка.
                 seen: set[str] = set()
                 unique: list[str] = []
                 for item in cleaned:

@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import core
+import file_picker
 
 
 APP_TITLE = "Project Context Builder"
@@ -86,6 +87,15 @@ class App(tk.Tk):
             settings.get("recent_outputs") or {}
         )
 
+        # Ручной выбор файлов.
+        # None = «все подходящие под фильтры».
+        # set[Path] = whitelist выбранных путей.
+        # _selected_files_root — к какому проекту относится выбор;
+        # если пользователь сменил проект, выбор не применяем.
+        self.selected_files: set[Path] | None = None
+        self._selected_files_root: str | None = None
+        self.selected_files_var = tk.StringVar(value="все подходящие")
+
         self.status_var = tk.StringVar(value="Выберите каталог проекта.")
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.advanced_summary_var = tk.StringVar(value="")
@@ -105,6 +115,7 @@ class App(tk.Tk):
         )
         self._update_advanced_summary()
         self._refresh_recent_menu()
+        self._update_selected_files_var()
 
     # ---------- UI ----------
 
@@ -338,6 +349,39 @@ class App(tk.Tk):
             foreground="#666666",
         ).pack(side="left", padx=(12, 0))
 
+        # Точный выбор файлов.
+        files_row = ttk.Frame(include_group)
+        files_row.grid(
+            row=4,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(10, 0),
+        )
+
+        ttk.Label(files_row, text="Точный выбор файлов:").pack(
+            side="left", padx=(0, 8)
+        )
+
+        ttk.Button(
+            files_row,
+            text="📁 Открыть список…",
+            command=self.open_file_picker,
+        ).pack(side="left")
+
+        ttk.Label(
+            files_row,
+            textvariable=self.selected_files_var,
+            foreground="#666666",
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Button(
+            files_row,
+            text="✕",
+            width=3,
+            command=self.clear_file_selection,
+        ).pack(side="left", padx=(6, 0))
+
         # ----- 3. Результат -----
         result_group = ttk.LabelFrame(frame, text="3. Результат", padding=8)
         result_group.pack(fill="x", pady=(0, 6))
@@ -426,6 +470,91 @@ class App(tk.Tk):
         self.log_msg("Приложение готово.")
         self.log_msg(f"Файл настроек: {core.settings_path()}")
 
+    # ---------- Ручной выбор файлов ----------
+
+    def _update_selected_files_var(self) -> None:
+        if self.selected_files is None:
+            self.selected_files_var.set("все подходящие")
+        else:
+            self.selected_files_var.set(
+                f"выбрано вручную: {len(self.selected_files)}"
+            )
+
+    def _current_whitelist(self, root: Path) -> set[Path] | None:
+        """Возвращает whitelist, только если он относится к этому root."""
+        if self.selected_files is None:
+            return None
+        if self._selected_files_root != str(root):
+            return None
+        return self.selected_files
+
+    def clear_file_selection(self) -> None:
+        if self.selected_files is None:
+            return
+        self.selected_files = None
+        self._selected_files_root = None
+        self._update_selected_files_var()
+        self.log_msg("Ручной выбор файлов сброшен.")
+
+    def open_file_picker(self) -> None:
+        try:
+            root, _ = self.get_settings()
+        except ValueError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return
+
+        enabled_categories = {
+            "code": self.code_var.get(),
+            "style": self.style_var.get(),
+            "config": self.config_var.get(),
+            "document": self.doc_var.get(),
+            "text": self.text_var.get(),
+            "data": self.data_var.get(),
+            "log": self.log_var.get(),
+            "output": self.output_files_var.get(),
+        }
+
+        ignored = core.parse_exclusions(self.exclude_var.get())
+        ext_filter = core.parse_extensions(self.ext_filter_var.get())
+        ext_exclude = self.ext_exclude_var.get()
+        include_env = self.env_files_var.get()
+
+        candidates = core.list_candidate_files(
+            root=root,
+            enabled_categories=enabled_categories,
+            ignored_dirs=ignored,
+            ext_filter=ext_filter,
+            ext_exclude=ext_exclude,
+            include_env_files=include_env,
+        )
+
+        if not candidates:
+            messagebox.showinfo(
+                APP_TITLE,
+                "Нет файлов, подходящих под текущие фильтры.",
+            )
+            return
+
+        preselected = self._current_whitelist(root)
+
+        result = file_picker.pick_files(
+            parent=self,
+            root=root,
+            candidates=candidates,
+            preselected=preselected,
+        )
+
+        if result is None:
+            return
+
+        self.selected_files = result
+        self._selected_files_root = str(root)
+        self._update_selected_files_var()
+
+        self.log_msg(
+            f"Ручной выбор: {len(result)} из {len(candidates)} файлов."
+        )
+
     # ---------- Недавние проекты ----------
 
     def _refresh_recent_menu(self) -> None:
@@ -491,6 +620,11 @@ class App(tk.Tk):
             return
 
         self.root_var.set(str(p))
+
+        # Сброс ручного выбора при смене проекта.
+        self.selected_files = None
+        self._selected_files_root = None
+        self._update_selected_files_var()
 
         saved_output = self.recent_outputs.get(path)
         if saved_output:
@@ -640,7 +774,7 @@ class App(tk.Tk):
             foreground="#666666",
         ).pack(anchor="w", pady=(4, 0))
 
-                # --- Кнопки ---
+        # --- Кнопки ---
         btn_row = ttk.Frame(container)
         btn_row.pack(fill="x", pady=(6, 0))
 
@@ -678,7 +812,7 @@ class App(tk.Tk):
         ).pack(anchor="w", pady=(10, 0))
 
         win.bind("<Escape>", lambda _e: win.destroy())
-        
+
         # Центрируем относительно главного окна.
         win.update_idletasks()
         w = win.winfo_width()
@@ -727,6 +861,10 @@ class App(tk.Tk):
         self.ext_exclude_var.set(
             bool(defaults.get("extension_exclude", False))
         )
+
+        self.selected_files = None
+        self._selected_files_root = None
+        self._update_selected_files_var()
 
         self.log_msg("Настройки сброшены к значениям по умолчанию.")
 
@@ -845,6 +983,12 @@ class App(tk.Tk):
 
         self.root_var.set(str(root))
         self.output_var.set(str(root / f"{root.name}_context.txt"))
+
+        # Сброс ручного выбора при смене проекта.
+        self.selected_files = None
+        self._selected_files_root = None
+        self._update_selected_files_var()
+
         self._add_recent_project(str(root))
         self.status_var.set("Каталог выбран.")
         self.log_msg(f"Выбран проект: {root}")
@@ -957,6 +1101,12 @@ class App(tk.Tk):
                 "(могут содержать секреты)."
             )
 
+        whitelist = self._current_whitelist(root)
+        if whitelist is not None:
+            self.log_msg(
+                f"Ручной выбор: {len(whitelist)} файл(ов)."
+            )
+
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
 
@@ -971,6 +1121,7 @@ class App(tk.Tk):
                 ext_filter=ext_filter,
                 ext_exclude=ext_exclude,
                 include_env_files=include_env,
+                file_whitelist=whitelist,
             )
         except Exception as exc:
             self.status_var.set("Ошибка.")
