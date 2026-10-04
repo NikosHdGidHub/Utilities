@@ -412,17 +412,30 @@ def list_candidate_files(
     ext_exclude: bool = False,
     include_env_files: bool = False,
     entries: list[Path] | None = None,
+    exclude_paths: set[Path] | None = None,
 ) -> list[tuple[Path, str]]:
     """
     Возвращает (path, category) для файлов, попадающих в контекст
     при текущих настройках. Содержимое файлов не читается — только
     фильтрация по имени/расширению/категории.
 
-    Используется и GUI-пикером, и build_context — чтобы правила
-    отбора были ровно одни и те же.
+    exclude_paths — пути, которые нужно игнорировать (например,
+    сам выходной файл контекста: иначе он попадёт в себя).
     """
     if entries is None:
         entries = collect_all_paths(root, ignored_dirs)
+
+    if exclude_paths:
+        resolved: set[Path] = set()
+        for p in exclude_paths:
+            try:
+                resolved.add(p.resolve())
+            except OSError:
+                continue
+        if resolved:
+            entries = [
+                e for e in entries if e.resolve() not in resolved
+            ]
 
     files = [path for path in entries if path.is_file()]
 
@@ -487,6 +500,7 @@ def build_context(
     ext_exclude: bool = False,
     include_env_files: bool = False,
     file_whitelist: set[Path] | None = None,
+    output_path: Path | None = None,
 ) -> tuple[str, dict]:
     """
     Собирает итоговый текст контекста и статистику.
@@ -494,8 +508,22 @@ def build_context(
     file_whitelist — необязательный набор путей (абсолютных). Если задан,
     в контекст попадут только файлы из него (пересечение с обычными
     фильтрами). Пустое множество = «ничего не выбрано вручную».
+
+    output_path — путь самого выходного файла. Он исключается из скана,
+    иначе контекст будет включать сам себя и удваиваться с каждой сборкой.
     """
     entries = collect_all_paths(root, ignored_dirs)
+
+    if output_path is not None:
+        try:
+            output_resolved = output_path.resolve()
+            entries = [
+                p for p in entries
+                if p.resolve() != output_resolved
+            ]
+        except OSError:
+            pass
+
     files = [path for path in entries if path.is_file()]
 
     max_bytes = max(1, int(max_mb * 1024 * 1024))

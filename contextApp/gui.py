@@ -519,6 +519,12 @@ class App(tk.Tk):
         ext_exclude = self.ext_exclude_var.get()
         include_env = self.env_files_var.get()
 
+        # Выходной файл не показываем в списке.
+        exclude: set[Path] = set()
+        output_text = self.output_var.get().strip()
+        if output_text:
+            exclude.add(Path(output_text).expanduser())
+
         candidates = core.list_candidate_files(
             root=root,
             enabled_categories=enabled_categories,
@@ -526,6 +532,7 @@ class App(tk.Tk):
             ext_filter=ext_filter,
             ext_exclude=ext_exclude,
             include_env_files=include_env,
+            exclude_paths=exclude or None,
         )
 
         if not candidates:
@@ -1110,6 +1117,15 @@ class App(tk.Tk):
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
 
+        # Путь к выходному файлу вычисляем ДО сборки — чтобы
+        # исключить его из скана (иначе файл попадёт в самого себя).
+        if not self.output_var.get().strip():
+            self.output_var.set(
+                str(root / f"{root.name}_context.txt")
+            )
+
+        output_path = Path(self.output_var.get()).expanduser()
+
         try:
             context, stats = core.build_context(
                 root=root,
@@ -1122,6 +1138,7 @@ class App(tk.Tk):
                 ext_exclude=ext_exclude,
                 include_env_files=include_env,
                 file_whitelist=whitelist,
+                output_path=output_path,
             )
         except Exception as exc:
             self.status_var.set("Ошибка.")
@@ -1132,13 +1149,6 @@ class App(tk.Tk):
             return
 
         self.context = context
-
-        if not self.output_var.get().strip():
-            self.output_var.set(
-                str(root / f"{root.name}_context.txt")
-            )
-
-        output_path = Path(self.output_var.get()).expanduser()
 
         if not self._write_context(output_path):
             return
