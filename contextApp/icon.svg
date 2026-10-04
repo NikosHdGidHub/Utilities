@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Угловые скобки -->
+  <g fill="none" stroke="#1e293b" stroke-width="10"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 42 88 L 42 42 L 88 42"/>
+    <path d="M 214 88 L 214 42 L 168 42"/>
+    <path d="M 42 168 L 42 214 L 88 214"/>
+    <path d="M 214 168 L 214 214 L 168 214"/>
+  </g>
+
+  <!-- Задние документы -->
+  <g transform="rotate(-12 96 110)">
+    <rect x="48" y="66" width="72" height="94" rx="12"
+          fill="#cbd5e1" stroke="#1e293b" stroke-width="9"/>
+  </g>
+  <g transform="rotate(12 160 110)">
+    <rect x="136" y="66" width="72" height="94" rx="12"
+          fill="#cbd5e1" stroke="#1e293b" stroke-width="9"/>
+  </g>
+
+  <!-- Передний документ -->
+  <rect x="86" y="120" width="84" height="110" rx="14"
+        fill="#ffffff" stroke="#1e293b" stroke-width="9"/>
+
+  <!-- Загнутый уголок -->
+  <path d="M 150 120 L 170 120 L 170 140 Z" fill="#1e293b"/>
+
+  <!-- Точки (акцентный цвет) -->
+  <circle cx="110" cy="174" r="6" fill="#3b82f6"/>
+  <circle cx="128" cy="174" r="6" fill="#3b82f6"/>
+  <circle cx="146" cy="174" r="6" fill="#3b82f6"/>
+</svg>

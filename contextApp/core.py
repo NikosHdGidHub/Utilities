@@ -442,6 +442,16 @@ def build_context(
     selected: list[tuple[Path, str]] = []
     skipped: list[tuple[str, str]] = []
 
+    # Умный override (вариант C): если пользователь снял ВСЕ галочки
+    # категорий и включил фильтр в режиме INCLUDE only — считаем, что
+    # он хочет ровно эти расширения, и категории не проверяем.
+    any_category_enabled = any(enabled_categories.values())
+    override_mode = (
+        bool(ext_filter)
+        and not ext_exclude
+        and not any_category_enabled
+    )
+
     for path in files:
         relative = path.relative_to(root).as_posix()
 
@@ -451,15 +461,32 @@ def build_context(
             )
             continue
 
+        name_lower = path.name.lower()
         suffix = path.suffix.lower()
 
         if ext_filter:
+            # Матчим и по расширению (.py, .css), и по имени файла
+            # (.gitignore, .editorconfig, Dockerfile и т.п. — у них
+            # suffix пустой, но имя осмысленное).
+            matched = (
+                suffix in ext_filter
+                or name_lower in ext_filter
+            )
+
             if ext_exclude:
-                if suffix in ext_filter:
+                if matched:
                     continue
             else:
-                if suffix not in ext_filter:
+                if not matched:
                     continue
+
+        if override_mode:
+            # Категории отключены — включаем всё, что прошло фильтр.
+            file_category = category(path)
+            if file_category is None:
+                continue
+            selected.append((path, file_category))
+            continue
 
         file_category = category(path)
         if file_category is None:
@@ -560,6 +587,11 @@ def build_context(
             f"  Extension filter ({mode}): "
             f"{', '.join(sorted(ext_filter))}"
         )
+        if override_mode:
+            parts.append(
+                "  Filter override: on "
+                "(all categories disabled, filter is the only selector)"
+            )
     else:
         parts.append("  Extension filter: off")
 
