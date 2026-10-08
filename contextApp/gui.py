@@ -24,6 +24,9 @@ QUICK_EXTENSIONS = (
     ".json",
 )
 
+# Задержка автосохранения настроек после последнего изменения.
+AUTOSAVE_DELAY_MS = 1500
+
 
 class App(tk.Tk):
     def __init__(self) -> None:
@@ -35,6 +38,7 @@ class App(tk.Tk):
 
         self.context = ""
         self._advanced_window: tk.Toplevel | None = None
+        self._autosave_after_id: str | None = None
 
         # Настройки читаем ДО создания переменных — чтобы сразу
         # подставить сохранённые значения.
@@ -80,6 +84,14 @@ class App(tk.Tk):
             value=bool(settings.get("extension_exclude", False))
         )
 
+        # Обрезка длинных файлов.
+        self.truncate_var = tk.BooleanVar(
+            value=bool(settings.get("truncate_enabled", False))
+        )
+        self.truncate_lines_var = tk.StringVar(
+            value=str(settings.get("truncate_max_lines", "1000"))
+        )
+
         self.recent_projects: list[str] = list(
             settings.get("recent_projects") or []
         )
@@ -116,6 +128,7 @@ class App(tk.Tk):
         self._update_advanced_summary()
         self._refresh_recent_menu()
         self._update_selected_files_var()
+        self._setup_autosave()
 
     # ---------- UI ----------
 
@@ -470,6 +483,43 @@ class App(tk.Tk):
         self.log_msg("Приложение готово.")
         self.log_msg(f"Файл настроек: {core.settings_path()}")
 
+    # ---------- Автосохранение ----------
+
+    def _setup_autosave(self) -> None:
+        watched = (
+            self.tree_var,
+            self.code_var,
+            self.style_var,
+            self.config_var,
+            self.doc_var,
+            self.text_var,
+            self.data_var,
+            self.log_var,
+            self.output_files_var,
+            self.empty_var,
+            self.env_files_var,
+            self.max_var,
+            self.exclude_var,
+            self.ext_filter_var,
+            self.ext_exclude_var,
+            self.truncate_var,
+            self.truncate_lines_var,
+        )
+
+        for var in watched:
+            var.trace_add("write", lambda *_: self._schedule_autosave())
+
+    def _schedule_autosave(self) -> None:
+        if self._autosave_after_id is not None:
+            self.after_cancel(self._autosave_after_id)
+        self._autosave_after_id = self.after(
+            AUTOSAVE_DELAY_MS, self._do_autosave
+        )
+
+    def _do_autosave(self) -> None:
+        self._autosave_after_id = None
+        self._save_settings()
+
     # ---------- Ручной выбор файлов ----------
 
     def _update_selected_files_var(self) -> None:
@@ -705,7 +755,8 @@ class App(tk.Tk):
             container,
             text=(
                 "Параметры не обязательные — по умолчанию работают "
-                "разумные значения. Изменения применяются сразу."
+                "разумные значения. Изменения применяются сразу "
+                "и сохраняются автоматически."
             ),
             foreground="#666666",
         ).pack(anchor="w", pady=(2, 12))
@@ -780,6 +831,46 @@ class App(tk.Tk):
             text="Названия через запятую: node_modules, .git, venv, dist …",
             foreground="#666666",
         ).pack(anchor="w", pady=(4, 0))
+
+        # --- Обрезка длинных файлов ---
+        truncate_group = ttk.LabelFrame(
+            container,
+            text="Обрезка длинных файлов",
+            padding=10,
+        )
+        truncate_group.pack(fill="x", pady=(0, 10))
+
+        truncate_row = ttk.Frame(truncate_group)
+        truncate_row.pack(fill="x")
+
+        ttk.Checkbutton(
+            truncate_row,
+            text="Обрезать файлы длиннее",
+            variable=self.truncate_var,
+        ).pack(side="left")
+
+        ttk.Spinbox(
+            truncate_row,
+            from_=100,
+            to=100000,
+            increment=100,
+            width=8,
+            textvariable=self.truncate_lines_var,
+        ).pack(side="left", padx=(6, 4))
+
+        ttk.Label(truncate_row, text="строк").pack(side="left")
+
+        ttk.Label(
+            truncate_group,
+            text=(
+                "Оставляет первые и последние N/2 строк, а в середине — "
+                "пометку о пропуске. Полезно для package-lock.json "
+                "и больших авто-сгенерированных файлов."
+            ),
+            foreground="#666666",
+            wraplength=640,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 0))
 
         # --- Кнопки ---
         btn_row = ttk.Frame(container)
@@ -868,6 +959,12 @@ class App(tk.Tk):
         self.ext_exclude_var.set(
             bool(defaults.get("extension_exclude", False))
         )
+        self.truncate_var.set(
+            bool(defaults.get("truncate_enabled", False))
+        )
+        self.truncate_lines_var.set(
+            str(defaults.get("truncate_max_lines", "1000"))
+        )
 
         self.selected_files = None
         self._selected_files_root = None
@@ -911,19 +1008,31 @@ class App(tk.Tk):
             "excluded_dirs": self.exclude_var.get(),
             "extension_filter": self.ext_filter_var.get(),
             "extension_exclude": self.ext_exclude_var.get(),
+            "truncate_enabled": self.truncate_var.get(),
+            "truncate_max_lines": self.truncate_lines_var.get(),
             "recent_projects": list(self.recent_projects),
             "recent_outputs": dict(self.recent_outputs),
         }
 
-    def _save_settings_on_exit(self) -> None:
-        data = self._collect_settings()
-        ok, error = core.save_settings(data)
+    def _save_settings(self) -> None:
+        try:
+            data = self._collect_settings()
+            ok, error = core.save_settings(data)
 
-        if not ok and error:
-            print(f"[settings] не удалось сохранить: {error}")
+            if not ok and error:
+                print(f"[settings] не удалось сохранить: {error}")
+        except Exception as exc:
+            print(f"[settings] исключение при сохранении: {exc}")
 
     def _on_close(self) -> None:
-        self._save_settings_on_exit()
+        if self._autosave_after_id is not None:
+            try:
+                self.after_cancel(self._autosave_after_id)
+            except tk.TclError:
+                pass
+            self._autosave_after_id = None
+
+        self._save_settings()
         self.destroy()
 
     # ---------- Пресеты ----------
@@ -1050,6 +1159,16 @@ class App(tk.Tk):
 
         return root, max_mb
 
+    def _get_truncate_max_lines(self) -> int:
+        try:
+            value = int(
+                float(self.truncate_lines_var.get().replace(",", "."))
+            )
+        except (ValueError, AttributeError):
+            return 1000
+
+        return max(50, value)
+
     def _write_context(self, output_path: Path) -> bool:
         try:
             output_path.parent.mkdir(
@@ -1092,6 +1211,8 @@ class App(tk.Tk):
         ext_filter = core.parse_extensions(self.ext_filter_var.get())
         ext_exclude = self.ext_exclude_var.get()
         include_env = self.env_files_var.get()
+        truncate_on = self.truncate_var.get()
+        truncate_lines = self._get_truncate_max_lines()
 
         self.log_msg("=== СБОРКА ===")
 
@@ -1106,6 +1227,11 @@ class App(tk.Tk):
             self.log_msg(
                 "ВНИМАНИЕ: включена обработка .env-файлов "
                 "(могут содержать секреты)."
+            )
+
+        if truncate_on:
+            self.log_msg(
+                f"Обрезка длинных файлов: до {truncate_lines} строк."
             )
 
         whitelist = self._current_whitelist(root)
@@ -1139,6 +1265,8 @@ class App(tk.Tk):
                 include_env_files=include_env,
                 file_whitelist=whitelist,
                 output_path=output_path,
+                truncate_long_files=truncate_on,
+                truncate_max_lines=truncate_lines,
             )
         except Exception as exc:
             self.status_var.set("Ошибка.")
@@ -1153,13 +1281,21 @@ class App(tk.Tk):
         if not self._write_context(output_path):
             return
 
+        tokens_str = core.format_tokens(stats["tokens"])
+        warning = (
+            " ⚠️"
+            if stats["tokens"] > core.TOKEN_WARNING_THRESHOLD
+            else ""
+        )
+
         self.stats_var.set(
             "Статистика: "
             f"элементов {stats['entries']} • "
             f"файлов {stats['files']} • "
             f"выбрано {stats['selected']} • "
             f"включено {stats['included']} • "
-            f"размер {core.format_size(stats['size'])}"
+            f"размер {core.format_size(stats['size'])} • "
+            f"~{tokens_str} токенов{warning}"
         )
 
         self.log_msg(
@@ -1167,7 +1303,19 @@ class App(tk.Tk):
             f"включено: {stats['included']}; "
             f"пропущено: {len(stats['skipped'])}"
         )
+        self.log_msg(
+            f"~{tokens_str} токенов (оценка), "
+            f"{core.format_size(stats['size'])}"
+        )
         self.log_msg(f"Сохранено: {output_path}")
+
+        if stats["tokens"] > core.TOKEN_WARNING_THRESHOLD:
+            self.log_msg(
+                f"⚠️ Контекст ~{tokens_str} токенов — может не влезть "
+                "в одну сессию ChatGPT (типичный лимит 128k). "
+                "Попробуйте отключить логи/данные или использовать "
+                "точный выбор файлов."
+            )
 
         self.status_var.set("Готово. Контекст собран.")
 
@@ -1175,7 +1323,8 @@ class App(tk.Tk):
             APP_TITLE,
             "Готово!\n\n"
             f"Включено файлов: {stats['included']}\n"
-            f"Размер: {core.format_size(stats['size'])}",
+            f"Размер: {core.format_size(stats['size'])}\n"
+            f"Оценка токенов: ~{tokens_str}",
         )
 
     def copy(self) -> None:

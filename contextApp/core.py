@@ -54,7 +54,7 @@ CODE_EXTENSIONS = {
 
 STYLE_EXTENSIONS = {
     ".css", ".scss", ".sass", ".less", ".styl",
-    ".svg",  # SVG — текстовый векторный формат, часто идёт рядом со стилями
+    ".svg",
 }
 
 # Дополнительные расширения кода — часто встречаются, но не в основных наборах.
@@ -133,6 +133,14 @@ CATEGORY_LABELS = {
     "log": "Logs (.log)",
     "output": "Lock files (package-lock.json, poetry.lock, ...)",
 }
+
+# Сколько файлов показывать в «Top files by size».
+TOP_FILES_LIMIT = 10
+
+# Насколько «тяжёлым» считаем контекст в токенах.
+# Типичный лимит одной сессии ChatGPT — 128k токенов,
+# но с системным промптом и историей остаётся меньше.
+TOKEN_WARNING_THRESHOLD = 100_000
 
 
 def _is_env_like(name: str) -> bool:
@@ -323,6 +331,65 @@ def format_size(num_bytes: int | float) -> str:
     return f"{value:.1f} TB"
 
 
+def format_tokens(count: int) -> str:
+    """'1234' -> '1.2k', '1234567' -> '1.2M'."""
+    if count < 1000:
+        return str(count)
+    if count < 1_000_000:
+        return f"{count / 1000:.1f}k"
+    return f"{count / 1_000_000:.1f}M"
+
+
+def estimate_tokens(text: str) -> int:
+    """
+    Грубая оценка количества токенов.
+
+    Формула эмпирическая:
+      - кириллица → ~2.5 символа на токен
+      - латиница/цифры/пунктуация → ~4 символа на токен
+
+    Точность ±20%, но для «влезет / не влезет» этого достаточно.
+    """
+    if not text:
+        return 0
+
+    cyrillic = 0
+    for ch in text:
+        if "\u0400" <= ch <= "\u04FF":
+            cyrillic += 1
+
+    other = len(text) - cyrillic
+    return int(cyrillic / 2.5 + other / 4.0)
+
+
+def truncate_text(text: str, max_lines: int) -> tuple[str, int]:
+    """
+    Обрезает текст до max_lines строк: оставляет по половине
+    сверху и снизу, в середине — пометку о пропуске.
+
+    Возвращает (результат, исходное_количество_строк).
+    Если строк <= max_lines — возвращает исходный текст без изменений.
+    """
+    if max_lines <= 0:
+        return text, 0
+
+    lines = text.splitlines()
+
+    if len(lines) <= max_lines:
+        return text, len(lines)
+
+    head = max_lines // 2
+    tail = max_lines - head
+    omitted = len(lines) - max_lines
+
+    kept = (
+        lines[:head]
+        + [f"... [{omitted} lines omitted] ..."]
+        + lines[-tail:]
+    )
+    return "\n".join(kept), len(lines)
+
+
 def read_text_file(
     path: Path,
     max_bytes: int | None = None,
@@ -501,16 +568,20 @@ def build_context(
     include_env_files: bool = False,
     file_whitelist: set[Path] | None = None,
     output_path: Path | None = None,
+    truncate_long_files: bool = False,
+    truncate_max_lines: int = 1000,
 ) -> tuple[str, dict]:
     """
     Собирает итоговый текст контекста и статистику.
 
-    file_whitelist — необязательный набор путей (абсолютных). Если задан,
-    в контекст попадут только файлы из него (пересечение с обычными
-    фильтрами). Пустое множество = «ничего не выбрано вручную».
+    file_whitelist — необязательный набор абсолютных путей. Если задан,
+    в контекст попадут только файлы из него.
 
     output_path — путь самого выходного файла. Он исключается из скана,
     иначе контекст будет включать сам себя и удваиваться с каждой сборкой.
+
+    truncate_long_files — если True, файлы длиннее truncate_max_lines
+    строк обрезаются (половина сверху + половина снизу + пометка).
     """
     entries = collect_all_paths(root, ignored_dirs)
 
@@ -590,6 +661,8 @@ def build_context(
     ]
 
     included = 0
+    file_sizes: list[tuple[str, int]] = []
+    truncated_files: list[tuple[str, int, int]] = []
 
     for path, file_category in sorted(
         selected,
@@ -613,17 +686,41 @@ def build_context(
 
         rel = relative_path.as_posix()
 
-        parts += [
+        # Обрезка длинных файлов.
+        note_line = ""
+        if truncate_long_files and truncate_max_lines > 0:
+            text, original_lines = truncate_text(
+                text, truncate_max_lines
+            )
+            if original_lines > truncate_max_lines:
+                note_line = (
+                    f"NOTE: truncated from {original_lines} "
+                    f"to {truncate_max_lines} lines"
+                )
+                truncated_files.append(
+                    (rel, original_lines, truncate_max_lines)
+                )
+
+        # Размер того, что реально пойдёт в контекст.
+        content_size = len(text.encode("utf-8"))
+        file_sizes.append((rel, content_size))
+
+        block = [
             "",
             "=" * 110,
             f"FILE: {rel}",
             f"TYPE: {file_category}",
+        ]
+        if note_line:
+            block.append(note_line)
+        block += [
             "=" * 110,
             f"--- BEGIN FILE: {rel} ---",
             text.rstrip(),
             f"--- END FILE: {rel} ---",
             "=" * 110,
         ]
+        parts += block
 
         included += 1
 
@@ -646,6 +743,10 @@ def build_context(
         f"  Empty files: {'yes' if include_empty else 'no'}",
         f"  .env files (secrets!): {'yes' if include_env_files else 'no'}",
         f"  Max file size: {max_mb:g} MB",
+        (
+            "  Truncate long files: "
+            f"{'yes, at ' + str(truncate_max_lines) + ' lines' if truncate_long_files else 'no'}"
+        ),
     ]
 
     if ext_filter:
@@ -668,6 +769,14 @@ def build_context(
             "(whitelist from file picker)"
         )
 
+    # Считаем размер и токены один раз на финальной строке.
+    # Собираем output здесь, чтобы stats были точными, но в файл
+    # добавим уже с этими значениями — поэтому сначала строки-заготовки,
+    # затем финальный join.
+    stats_placeholder = "\n".join(parts)  # временно
+    preliminary_size = len(stats_placeholder.encode("utf-8"))
+    preliminary_tokens = estimate_tokens(stats_placeholder)
+
     parts += [
         "",
         "Statistics:",
@@ -676,6 +785,8 @@ def build_context(
         f"  Selected files: {len(selected)}",
         f"  Included contents: {included}",
         f"  Skipped: {len(skipped)}",
+        f"  Context size: {format_size(preliminary_size)}",
+        f"  Estimated tokens: ~{format_tokens(preliminary_tokens)}",
     ]
 
     if not include_env_files:
@@ -685,6 +796,25 @@ def build_context(
                 "  Excluded by default (secrets): "
                 f"{', '.join(sorted(excluded_names))}"
             )
+
+    # Top files by size.
+    if file_sizes:
+        top = sorted(file_sizes, key=lambda x: x[1], reverse=True)
+        top = top[:TOP_FILES_LIMIT]
+        parts += [
+            "",
+            "Largest files in context:",
+        ]
+        for name, size in top:
+            parts.append(f"  {format_size(size):>10}  {name}")
+
+    if truncated_files:
+        parts += [
+            "",
+            "Truncated files:",
+        ]
+        for name, original, kept in truncated_files:
+            parts.append(f"  {name}  ({original} -> {kept} lines)")
 
     if skipped:
         parts += [
@@ -698,13 +828,20 @@ def build_context(
 
     output = "\n".join(parts)
 
+    # Финальный размер/токены уже по готовому тексту.
+    final_size = len(output.encode("utf-8"))
+    final_tokens = estimate_tokens(output)
+
     stats = {
         "entries": len(entries),
         "files": len(files),
         "selected": len(selected),
         "included": included,
         "skipped": skipped,
-        "size": len(output.encode("utf-8")),
+        "size": final_size,
+        "tokens": final_tokens,
+        "file_sizes": file_sizes,
+        "truncated_files": truncated_files,
     }
 
     return output, stats
@@ -758,6 +895,8 @@ def default_settings() -> dict:
         "excluded_dirs": ", ".join(sorted(DEFAULT_IGNORED_DIRS)),
         "extension_filter": "",
         "extension_exclude": False,
+        "truncate_enabled": False,
+        "truncate_max_lines": "1000",
         "recent_projects": [],
         "recent_outputs": {},
     }
