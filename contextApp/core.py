@@ -134,8 +134,6 @@ CATEGORY_LABELS = {
     "output": "Lock files (package-lock.json, poetry.lock, ...)",
 }
 
-# Сколько файлов показывать в «Top files by size».
-TOP_FILES_LIMIT = 10
 
 # Насколько «тяжёлым» считаем контекст в токенах.
 # Типичный лимит одной сессии ChatGPT — 128k токенов,
@@ -279,11 +277,18 @@ def collect_all_paths(
 
 
 def build_tree_text(root: Path, paths: list[Path]) -> str:
-    """Строит читаемое ASCII-дерево проекта."""
+    """
+    Строит читаемое ASCII-дерево проекта с размерами.
+
+    У файлов — собственный размер. У папок — суммарный размер
+    всех файлов внутри (рекурсивно).
+    """
     lines = [f"ROOT: {root.resolve()}", ""]
 
     rel_dirs: set[Path] = set()
     children: dict[Path, list[Path]] = {}
+    file_sizes: dict[Path, int] = {}   # полный путь -> размер
+    dir_sizes: dict[Path, int] = {}    # полный путь -> суммарный размер
 
     for path in paths:
         try:
@@ -293,6 +298,20 @@ def build_tree_text(root: Path, paths: list[Path]) -> str:
 
         if path.is_dir():
             rel_dirs.add(rel)
+        else:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            file_sizes[path] = size
+
+            # Накручиваем размер на всех предков до корня.
+            ancestor = path.parent
+            while True:
+                dir_sizes[ancestor] = dir_sizes.get(ancestor, 0) + size
+                if ancestor == root or ancestor == ancestor.parent:
+                    break
+                ancestor = ancestor.parent
 
         children.setdefault(rel.parent, []).append(rel)
 
@@ -307,17 +326,27 @@ def build_tree_text(root: Path, paths: list[Path]) -> str:
             is_last = index == len(direct) - 1
             connector = "└── " if is_last else "├── "
 
-            lines.append(prefix + connector + rel.name)
+            full = root / rel
 
             if rel in rel_dirs:
+                size = dir_sizes.get(full, 0)
+                size_str = f"  [{format_size_short(size)}]"
+                lines.append(prefix + connector + rel.name + size_str)
                 extension = "    " if is_last else "│   "
                 render(rel, prefix + extension)
+            else:
+                size = file_sizes.get(full)
+                size_str = (
+                    f"  [{format_size_short(size)}]"
+                    if size is not None
+                    else ""
+                )
+                lines.append(prefix + connector + rel.name + size_str)
 
     lines.append(root.name + "/")
     render(Path("."), "")
 
     return "\n".join(lines)
-
 
 def format_size(num_bytes: int | float) -> str:
     """Человекочитаемый размер."""
@@ -330,6 +359,18 @@ def format_size(num_bytes: int | float) -> str:
 
     return f"{value:.1f} TB"
 
+def format_size_short(num_bytes: int | float) -> str:
+    """Компактный размер для дерева: '512B', '4.2KB', '1.2MB'."""
+    value = float(num_bytes)
+
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)}B"
+            return f"{value:.1f}{unit}"
+        value /= 1024
+
+    return f"{value:.1f}TB"
 
 def format_tokens(count: int) -> str:
     """'1234' -> '1.2k', '1234567' -> '1.2M'."""
@@ -686,6 +727,12 @@ def build_context(
 
         rel = relative_path.as_posix()
 
+        # Размер исходного файла (до обрезки).
+        try:
+            original_size = path.stat().st_size
+        except OSError:
+            original_size = 0
+
         # Обрезка длинных файлов.
         note_line = ""
         if truncate_long_files and truncate_max_lines > 0:
@@ -710,6 +757,7 @@ def build_context(
             "=" * 110,
             f"FILE: {rel}",
             f"TYPE: {file_category}",
+            f"SIZE: {format_size(original_size)}",
         ]
         if note_line:
             block.append(note_line)
@@ -797,16 +845,6 @@ def build_context(
                 f"{', '.join(sorted(excluded_names))}"
             )
 
-    # Top files by size.
-    if file_sizes:
-        top = sorted(file_sizes, key=lambda x: x[1], reverse=True)
-        top = top[:TOP_FILES_LIMIT]
-        parts += [
-            "",
-            "Largest files in context:",
-        ]
-        for name, size in top:
-            parts.append(f"  {format_size(size):>10}  {name}")
 
     if truncated_files:
         parts += [
