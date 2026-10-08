@@ -10,7 +10,7 @@ from tkinter.scrolledtext import ScrolledText
 
 import core
 import file_picker
-
+import git_utils
 
 APP_TITLE = "Project Context Builder"
 
@@ -23,6 +23,19 @@ QUICK_EXTENSIONS = (
     ".py",
     ".json",
 )
+
+# Режимы фильтра «только изменённые»: (ключ, отображаемая метка).
+CHANGED_MODES: tuple[tuple[str, str], ...] = (
+    ("off", "Выключено"),
+    ("uncommitted", "Незакоммиченные"),
+    ("since_last_commit", "С последнего коммита"),
+    ("last_2_commits", "Последние 2 коммита"),
+    ("yesterday", "Вчера"),
+    ("day_before_yesterday", "Позавчера"),
+)
+
+CHANGED_LABEL_TO_KEY = {label: key for key, label in CHANGED_MODES}
+CHANGED_KEY_TO_LABEL = {key: label for key, label in CHANGED_MODES}
 
 # Задержка автосохранения настроек после последнего изменения.
 AUTOSAVE_DELAY_MS = 1500
@@ -92,6 +105,17 @@ class App(tk.Tk):
             value=str(settings.get("truncate_max_lines", "1000"))
         )
 
+        # Фильтр «только изменённые».
+        _initial_mode = str(settings.get("changed_only_mode", "off"))
+        if _initial_mode not in CHANGED_KEY_TO_LABEL:
+            _initial_mode = "off"
+        self._changed_mode = _initial_mode
+        self.changed_only_display_var = tk.StringVar(
+            value=CHANGED_KEY_TO_LABEL[_initial_mode]
+        )
+        self.changed_count_var = tk.StringVar(value="")
+        self._changed_count_after_id: str | None = None
+
         self.recent_projects: list[str] = list(
             settings.get("recent_projects") or []
         )
@@ -129,6 +153,16 @@ class App(tk.Tk):
         self._refresh_recent_menu()
         self._update_selected_files_var()
         self._setup_autosave()
+
+        # Фильтр «только изменённые».
+        self.changed_only_display_var.trace_add(
+            "write", lambda *_: self._on_changed_mode_changed()
+        )
+        self.root_var.trace_add(
+            "write",
+            lambda *_: self._schedule_changed_count_update(),
+        )
+        self._schedule_changed_count_update()
 
     # ---------- UI ----------
 
@@ -395,6 +429,37 @@ class App(tk.Tk):
             command=self.clear_file_selection,
         ).pack(side="left", padx=(6, 0))
 
+        # Фильтр «только изменённые».
+        changed_row = ttk.Frame(include_group)
+        changed_row.grid(
+            row=5,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(10, 0),
+        )
+
+        ttk.Label(changed_row, text="Только изменённые:").pack(
+            side="left", padx=(0, 8)
+        )
+
+        self.changed_combo = ttk.Combobox(
+            changed_row,
+            textvariable=self.changed_only_display_var,
+            values=[label for _, label in CHANGED_MODES],
+            state="readonly",
+            width=24,
+        )
+        self.changed_combo.pack(side="left")
+
+        ttk.Label(
+            changed_row,
+            textvariable=self.changed_count_var,
+            foreground="#666666",
+        ).pack(side="left", padx=(10, 0))
+
+        # ----- 3. Результат -----
+
         # ----- 3. Результат -----
         result_group = ttk.LabelFrame(frame, text="3. Результат", padding=8)
         result_group.pack(fill="x", pady=(0, 6))
@@ -575,6 +640,8 @@ class App(tk.Tk):
         if output_text:
             exclude.add(Path(output_text).expanduser())
 
+        changed_files, _ = self._get_changed_files_for_build(root)
+
         candidates = core.list_candidate_files(
             root=root,
             enabled_categories=enabled_categories,
@@ -583,6 +650,7 @@ class App(tk.Tk):
             ext_exclude=ext_exclude,
             include_env_files=include_env,
             exclude_paths=exclude or None,
+            changed_only_files=changed_files,
         )
 
         if not candidates:
@@ -611,6 +679,75 @@ class App(tk.Tk):
         self.log_msg(
             f"Ручной выбор: {len(result)} из {len(candidates)} файлов."
         )
+
+    # ---------- Фильтр «только изменённые» ----------
+
+    def _on_changed_mode_changed(self) -> None:
+        label = self.changed_only_display_var.get()
+        self._changed_mode = CHANGED_LABEL_TO_KEY.get(label, "off")
+        self._schedule_changed_count_update()
+        self._schedule_autosave()
+
+    def _schedule_changed_count_update(self) -> None:
+        if self._changed_count_after_id is not None:
+            self.after_cancel(self._changed_count_after_id)
+        self._changed_count_after_id = self.after(
+            400, self._update_changed_count
+        )
+
+    def _update_changed_count(self) -> None:
+        self._changed_count_after_id = None
+
+        if self._changed_mode == "off":
+            self.changed_count_var.set("")
+            return
+
+        root_text = self.root_var.get().strip()
+        if not root_text:
+            self.changed_count_var.set("—")
+            return
+
+        root = Path(root_text).expanduser()
+        if not root.is_dir():
+            self.changed_count_var.set("—")
+            return
+
+        if git_utils.get_repo_root(root) is None:
+            self.changed_count_var.set("не git-репозиторий")
+            return
+
+        try:
+            changed = git_utils.get_changed_files(root, self._changed_mode)
+        except Exception as exc:
+            self.changed_count_var.set(f"ошибка: {exc}")
+            return
+
+        if changed is None:
+            self.changed_count_var.set("")
+        elif not changed:
+            self.changed_count_var.set("нет изменений")
+        else:
+            self.changed_count_var.set(f"{len(changed)} файл(ов)")
+
+    def _get_changed_files_for_build(
+        self, root: Path
+    ) -> tuple[set[Path] | None, str | None]:
+        """Возвращает (set, label) для передачи в build_context."""
+        if self._changed_mode == "off":
+            return None, None
+
+        try:
+            changed = git_utils.get_changed_files(root, self._changed_mode)
+        except Exception:
+            changed = set()
+
+        if changed is None:
+            return None, None
+
+        label = CHANGED_KEY_TO_LABEL.get(
+            self._changed_mode, self._changed_mode
+        )
+        return changed, f"git: {label.lower()}"
 
     # ---------- Недавние проекты ----------
 
@@ -966,6 +1103,14 @@ class App(tk.Tk):
             str(defaults.get("truncate_max_lines", "1000"))
         )
 
+        mode = str(defaults.get("changed_only_mode", "off"))
+        if mode not in CHANGED_KEY_TO_LABEL:
+            mode = "off"
+        self._changed_mode = mode
+        self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL[mode])
+
+        self.selected_files = None
+
         self.selected_files = None
         self._selected_files_root = None
         self._update_selected_files_var()
@@ -1010,9 +1155,11 @@ class App(tk.Tk):
             "extension_exclude": self.ext_exclude_var.get(),
             "truncate_enabled": self.truncate_var.get(),
             "truncate_max_lines": self.truncate_lines_var.get(),
+            "changed_only_mode": self._changed_mode,
             "recent_projects": list(self.recent_projects),
             "recent_outputs": dict(self.recent_outputs),
         }
+        
 
     def _save_settings(self) -> None:
         try:
@@ -1240,6 +1387,15 @@ class App(tk.Tk):
                 f"Ручной выбор: {len(whitelist)} файл(ов)."
             )
 
+        changed_files, changed_label = self._get_changed_files_for_build(
+            root
+        )
+        if changed_files is not None:
+            self.log_msg(
+                f"Только изменённые ({changed_label}): "
+                f"{len(changed_files)} файл(ов)."
+            )
+
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
 
@@ -1267,6 +1423,8 @@ class App(tk.Tk):
                 output_path=output_path,
                 truncate_long_files=truncate_on,
                 truncate_max_lines=truncate_lines,
+                changed_only_files=changed_files,
+                changed_only_label=changed_label,
             )
         except Exception as exc:
             self.status_var.set("Ошибка.")

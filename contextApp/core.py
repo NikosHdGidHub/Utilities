@@ -521,6 +521,7 @@ def list_candidate_files(
     include_env_files: bool = False,
     entries: list[Path] | None = None,
     exclude_paths: set[Path] | None = None,
+    changed_only_files: set[Path] | None = None,
 ) -> list[tuple[Path, str]]:
     """
     Возвращает (path, category) для файлов, попадающих в контекст
@@ -529,6 +530,7 @@ def list_candidate_files(
 
     exclude_paths — пути, которые нужно игнорировать (например,
     сам выходной файл контекста: иначе он попадёт в себя).
+    changed_only_files — только файлы, которые были изменены.
     """
     if entries is None:
         entries = collect_all_paths(root, ignored_dirs)
@@ -559,11 +561,28 @@ def list_candidate_files(
         and not any_category_enabled
     )
 
+    if changed_only_files is not None:
+        resolved_changed: set[Path] = set()
+        for p in changed_only_files:
+            try:
+                resolved_changed.add(p.resolve())
+            except OSError:
+                continue
+    else:
+        resolved_changed = None
+
     result: list[tuple[Path, str]] = []
 
     for path in files:
         if path.name.lower() in excluded_files:
             continue
+
+        if resolved_changed is not None:
+            try:
+                if path.resolve() not in resolved_changed:
+                    continue
+            except OSError:
+                continue
 
         name_lower = path.name.lower()
         suffix = path.suffix.lower()
@@ -611,6 +630,8 @@ def build_context(
     output_path: Path | None = None,
     truncate_long_files: bool = False,
     truncate_max_lines: int = 1000,
+    changed_only_files: set[Path] | None = None,
+    changed_only_label: str | None = None,
 ) -> tuple[str, dict]:
     """
     Собирает итоговый текст контекста и статистику.
@@ -648,6 +669,7 @@ def build_context(
         ext_exclude=ext_exclude,
         include_env_files=include_env_files,
         entries=entries,
+        changed_only_files=changed_only_files,
     )
 
     manual_selection_active = file_whitelist is not None
@@ -817,6 +839,13 @@ def build_context(
             "(whitelist from file picker)"
         )
 
+    if changed_only_files is not None:
+        label = changed_only_label or "custom"
+        parts.append(
+            f"  Changed files only ({label}): "
+            f"{len(changed_only_files)} file(s) matched"
+        )
+
     # Считаем размер и токены один раз на финальной строке.
     # Собираем output здесь, чтобы stats были точными, но в файл
     # добавим уже с этими значениями — поэтому сначала строки-заготовки,
@@ -935,6 +964,7 @@ def default_settings() -> dict:
         "extension_exclude": False,
         "truncate_enabled": False,
         "truncate_max_lines": "1000",
+        "changed_only_mode": "off",
         "recent_projects": [],
         "recent_outputs": {},
     }
