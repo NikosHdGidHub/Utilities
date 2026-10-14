@@ -549,6 +549,15 @@ class App(tk.Tk):
         )
         self.prompt_text.pack(fill="x")
 
+        prompt_actions = ttk.Frame(prompt_group)
+        prompt_actions.pack(fill="x", pady=(4, 0))
+
+        ttk.Button(
+            prompt_actions,
+            text="Очистить промпт",
+            command=self._clear_prompt,
+        ).pack(side="right")
+
         if self._initial_user_prompt:
             self.prompt_text.insert("1.0", self._initial_user_prompt)
 
@@ -708,6 +717,20 @@ class App(tk.Tk):
             parts.append("Помоги пожалуйста.")
 
         return "\n\n".join(parts)
+
+    def _clear_prompt(self) -> None:
+        """Очищает только свободный текст промпта, галочки не трогает."""
+        if getattr(self, "prompt_text", None) is None:
+            return
+
+        current = self.prompt_text.get("1.0", "end-1c")
+        if not current.strip():
+            return
+
+        self.prompt_text.delete("1.0", "end")
+        self.prompt_text.edit_modified(False)
+        self._schedule_autosave()
+        self.log_msg("Промпт очищен.")
 
     def _schedule_autosave(self) -> None:
         if self._autosave_after_id is not None:
