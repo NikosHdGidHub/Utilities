@@ -28,7 +28,7 @@ QUICK_EXTENSIONS = (
 CHANGED_MODES: tuple[tuple[str, str], ...] = (
     ("off", "Выключено"),
     ("uncommitted", "Незакоммиченные"),
-    ("since_last_commit", "С последнего коммита"),
+    ("since_last_commit", "Из последнего коммита"),
     ("last_2_commits", "Последние 2 коммита"),
     ("yesterday", "Вчера"),
     ("day_before_yesterday", "Позавчера"),
@@ -57,6 +57,17 @@ class App(tk.Tk):
         # подставить сохранённые значения.
         settings = core.load_settings()
         cats = settings.get("categories") or {}
+
+        self._initial_user_prompt = str(settings.get("user_prompt", ""))
+
+        # Готовые фразы-обёртки вокруг пользовательского промпта.
+        self._initial_greeting = bool(settings.get("greeting_enabled", False))
+        self._initial_code_label_mode = str(
+            settings.get("code_label_mode", "none")
+        )
+        if self._initial_code_label_mode not in ("none", "current", "changes"):
+            self._initial_code_label_mode = "none"
+        self._initial_help = bool(settings.get("help_enabled", False))
 
         self.root_var = tk.StringVar()
         self.output_var = tk.StringVar()
@@ -136,6 +147,10 @@ class App(tk.Tk):
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.advanced_summary_var = tk.StringVar(value="")
 
+        self.greeting_var = tk.BooleanVar(value=self._initial_greeting)
+        self.code_label_var = tk.StringVar(value=self._initial_code_label_mode)
+        self.help_var = tk.BooleanVar(value=self._initial_help)
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.setup_ui()
@@ -163,6 +178,14 @@ class App(tk.Tk):
             lambda *_: self._schedule_changed_count_update(),
         )
         self._schedule_changed_count_update()
+
+        # Горячая клавиша: Ctrl+Enter — собрать контекст.
+        # Биндим на self (главное окно), событие всплывает от любого
+        # дочернего виджета. Диалоги (file_picker, advanced) — отдельные
+        # Toplevel, они сюда не пробьются, и это правильно.
+        self.bind("<Control-Return>", self._on_hotkey_build)
+        # На macOS принят Cmd+Enter.
+        self.bind("<Command-Return>", self._on_hotkey_build)
 
     # ---------- UI ----------
 
@@ -458,10 +481,85 @@ class App(tk.Tk):
             foreground="#666666",
         ).pack(side="left", padx=(10, 0))
 
-        # ----- 3. Результат -----
+        # ----- 3. Промпт -----
+        prompt_group = ttk.LabelFrame(
+            frame, text="3. Промпт для GPT (необязательно)", padding=8
+        )
+        prompt_group.pack(fill="x", pady=(0, 6))
 
-        # ----- 3. Результат -----
-        result_group = ttk.LabelFrame(frame, text="3. Результат", padding=8)
+        ttk.Label(
+            prompt_group,
+            text=(
+                "Что сделать с этим контекстом. Текст будет помещён в начало "
+                "файла как задача, а дерево и файлы — как материал для неё. "
+                "Оставь пустым, если хочешь просто передать контекст. "
+                "Галочки ниже добавляют стандартные фразы вокруг твоего текста."
+            ),
+            foreground="#666666",
+            wraplength=900,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        # Готовые фразы-обёртки.
+        phrases_row = ttk.Frame(prompt_group)
+        phrases_row.pack(fill="x", pady=(0, 6))
+
+        ttk.Checkbutton(
+            phrases_row,
+            text="Приветствие",
+            variable=self.greeting_var,
+        ).pack(side="left", padx=(0, 12))
+
+        ttk.Label(phrases_row, text="│").pack(side="left", padx=(0, 12))
+
+        ttk.Radiobutton(
+            phrases_row,
+            text="Не указывать",
+            variable=self.code_label_var,
+            value="none",
+        ).pack(side="left")
+
+        ttk.Radiobutton(
+            phrases_row,
+            text="Обозначение кода",
+            variable=self.code_label_var,
+            value="current",
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Radiobutton(
+            phrases_row,
+            text="Изменение кода",
+            variable=self.code_label_var,
+            value="changes",
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Label(phrases_row, text="│").pack(side="left", padx=(12, 12))
+
+        ttk.Checkbutton(
+            phrases_row,
+            text="Помощь",
+            variable=self.help_var,
+        ).pack(side="left")
+
+        self.prompt_text = ScrolledText(
+            prompt_group,
+            height=5,
+            wrap="word",
+            font=("Segoe UI", 9),
+        )
+        self.prompt_text.pack(fill="x")
+
+        if self._initial_user_prompt:
+            self.prompt_text.insert("1.0", self._initial_user_prompt)
+
+        # <<Modified>> срабатывает один раз, потом флаг надо сбрасывать.
+        self.prompt_text.edit_modified(False)
+        self.prompt_text.bind(
+            "<<Modified>>", self._on_prompt_modified
+        )
+
+        # ----- 4. Результат -----
+        result_group = ttk.LabelFrame(frame, text="4. Результат", padding=8)
         result_group.pack(fill="x", pady=(0, 6))
 
         ttk.Label(result_group, text="TXT:").grid(
@@ -569,10 +667,47 @@ class App(tk.Tk):
             self.ext_exclude_var,
             self.truncate_var,
             self.truncate_lines_var,
+            self.greeting_var,
+            self.code_label_var,
+            self.help_var,
         )
 
         for var in watched:
             var.trace_add("write", lambda *_: self._schedule_autosave())
+
+    def _on_prompt_modified(self, _event) -> None:
+        if not self.prompt_text.edit_modified():
+            return
+        self.prompt_text.edit_modified(False)
+        self._schedule_autosave()
+
+    def _on_hotkey_build(self, _event=None) -> str:
+        self.build()
+        return "break"
+
+    def _compose_user_prompt(self) -> str:
+        """Собирает финальный промпт из галочек и свободного текста."""
+        parts: list[str] = []
+
+        if self.greeting_var.get():
+            parts.append("Привет, давай вместе поработаем.")
+
+        mode = self.code_label_var.get()
+        if mode == "current":
+            parts.append("Вот мой текущий код.")
+        elif mode == "changes":
+            parts.append("Вот мои правки в коде.")
+
+        body = ""
+        if getattr(self, "prompt_text", None) is not None:
+            body = self.prompt_text.get("1.0", "end-1c").strip()
+        if body:
+            parts.append(body)
+
+        if self.help_var.get():
+            parts.append("Помоги пожалуйста.")
+
+        return "\n\n".join(parts)
 
     def _schedule_autosave(self) -> None:
         if self._autosave_after_id is not None:
@@ -1109,7 +1244,18 @@ class App(tk.Tk):
         self._changed_mode = mode
         self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL[mode])
 
-        self.selected_files = None
+        if getattr(self, "prompt_text", None) is not None:
+            self.prompt_text.delete("1.0", "end")
+
+        defaults_greeting = bool(defaults.get("greeting_enabled", False))
+        defaults_mode = str(defaults.get("code_label_mode", "none"))
+        if defaults_mode not in ("none", "current", "changes"):
+            defaults_mode = "none"
+        defaults_help = bool(defaults.get("help_enabled", False))
+
+        self.greeting_var.set(defaults_greeting)
+        self.code_label_var.set(defaults_mode)
+        self.help_var.set(defaults_help)
 
         self.selected_files = None
         self._selected_files_root = None
@@ -1158,6 +1304,14 @@ class App(tk.Tk):
             "changed_only_mode": self._changed_mode,
             "recent_projects": list(self.recent_projects),
             "recent_outputs": dict(self.recent_outputs),
+            "user_prompt": (
+                self.prompt_text.get("1.0", "end-1c")
+                if getattr(self, "prompt_text", None) is not None
+                else ""
+            ),
+            "greeting_enabled": self.greeting_var.get(),
+            "code_label_mode": self.code_label_var.get(),
+            "help_enabled": self.help_var.get(),
         }
         
 
@@ -1408,6 +1562,12 @@ class App(tk.Tk):
 
         output_path = Path(self.output_var.get()).expanduser()
 
+        user_prompt = self._compose_user_prompt()
+        if user_prompt:
+            self.log_msg(
+                f"Промпт: {len(user_prompt)} символов — будет вставлен в начало."
+            )
+
         try:
             context, stats = core.build_context(
                 root=root,
@@ -1425,6 +1585,7 @@ class App(tk.Tk):
                 truncate_max_lines=truncate_lines,
                 changed_only_files=changed_files,
                 changed_only_label=changed_label,
+                user_prompt=user_prompt,
             )
         except Exception as exc:
             self.status_var.set("Ошибка.")

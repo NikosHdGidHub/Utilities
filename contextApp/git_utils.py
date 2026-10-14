@@ -113,22 +113,26 @@ def _files_uncommitted(root: Path, repo_root: Path) -> set[Path]:
 
 
 def _files_since_last_commit(root: Path, repo_root: Path) -> set[Path]:
-    """Файлы, изменённые с HEAD: staged + unstaged + untracked."""
-    result: set[Path] = set()
+    """Файлы, изменённые в самом последнем коммите (HEAD~1..HEAD).
 
+    Если это первый коммит в репозитории — сравниваем с пустым
+    деревом, то есть показываем всё, что вошло в этот коммит.
+    """
     ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames", "HEAD",
+        "diff", "--name-only", "--no-renames", "HEAD~1", "HEAD",
     ])
     if ok:
-        result |= _resolve_files(repo_root, output.splitlines())
+        return _resolve_files(repo_root, output.splitlines())
 
+    # Первый коммит: HEAD~1 не существует, берём empty tree.
+    empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
     ok, output = _run_git(root, [
-        "ls-files", "--others", "--exclude-standard",
+        "diff", "--name-only", "--no-renames", empty_tree, "HEAD",
     ])
     if ok:
-        result |= _resolve_files(repo_root, output.splitlines())
+        return _resolve_files(repo_root, output.splitlines())
 
-    return result
+    return set()
 
 
 def _files_last_2_commits(root: Path, repo_root: Path) -> set[Path]:
