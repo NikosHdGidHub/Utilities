@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re   
 from pathlib import Path
 
 # Папки, которые обычно не нужны в контексте проекта.
@@ -59,7 +60,6 @@ STYLE_EXTENSIONS = {
 
 # Дополнительные расширения кода — часто встречаются, но не в основных наборах.
 EXTRA_CODE_EXTENSIONS = {
-    ".spec",     # PyInstaller (это Python-код)
     ".gradle",   # Gradle
     ".cmake",    # CMake
     ".mk",       # Makefile-фрагменты
@@ -67,6 +67,7 @@ EXTRA_CODE_EXTENSIONS = {
 
 CONFIG_EXTENSIONS = {
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".spec",     # PyInstaller 
     ".conf", ".properties", ".xml",
 }
 
@@ -141,6 +142,307 @@ CATEGORY_LABELS = {
 # сюда второй magic и будем искать оба.
 CONTEXT_MAGIC = "PCBv1-9f4a"
 CONTEXT_MARKER_LINE = f"# magic: {CONTEXT_MAGIC}"
+
+# Имя файла с промптом. Лежит в корне проекта, редактируется
+# вручную (VS Code, Typora, Obsidian — что угодно с spellcheck).
+PROMPT_FILENAME = "Prompt.md"
+
+# Файлы, которые создаёт сам инструмент и которые не должны
+# попадать в содержимое контекста. Проверка идёт по имени без
+# пути — так файл отсекается и в корне, и в любой подпапке.
+TOOL_FILENAMES = {PROMPT_FILENAME.lower()}
+
+PROMPT_TEMPLATE = """\
+# Промпт
+
+> Отметь галочками пункты, которые нужно включить в контекст.
+> `- [x]` попадает в промпт, `- [ ]` пропускается.
+> QUESTS - шаги и задача добавляются только, если стоит `- [x]`
+> Обычный текст FREE - добавляются как есть.
+
+## [HEADER] Заголовок - не меняй строчку ([HEADER]) 
+
+- [x] Привет, давай вместе поработаем.
+- [x] Вот мой текущий код.
+- [ ] Вот мои правки в коде.
+
+## [QUESTS] Задачи - не меняй строчку ([QUESTS]) 
+
+- [x] Опишу первую задачу здесь.
+1. Шаг 1
+2. Шаг 2
+
+- [ ] Опишу Вторую задачу здесь.
+1. Шаг 1
+2. Шаг 2
+3. Шаг 3
+
+## [FREE] Свободное пространство - не меняй строчку ([FREE]) 
+
+Здесь мой пользовательское сообщение - оно будет показано 
+
+## [QUESTIONS] Вопросы - не меняй строчку ([QUESTIONS]) 
+
+- [x] Как тебе идея?
+- [ ] Я прав?
+- [ ] Понятен запрос?
+- [x] Помоги пожалуйста.
+"""
+
+
+def prompt_file_path(root: Path) -> Path:
+    """Путь к файлу промпта в корне проекта."""
+    return root / PROMPT_FILENAME
+
+
+def ensure_prompt_file(root: Path) -> tuple[Path, bool]:
+    """
+    Возвращает (path, created).
+
+    Если файла нет — создаёт шаблон и возвращает created=True.
+    Никогда не бросает: при ошибке записи вернёт (path, False).
+    """
+    path = prompt_file_path(root)
+    if path.exists():
+        return path, False
+
+    try:
+        path.write_text(PROMPT_TEMPLATE, encoding="utf-8")
+        return path, True
+    except OSError:
+        return path, False
+
+
+# Регулярки для парсера промпта.
+_SECTION_RE = re.compile(r"^\s*##\s*\[([A-Z]+)\]")
+_CHECKLIST_RE = re.compile(r"^[-*+]\s+\[([xX ])\]\s*(.*)$")
+_NUMBERED_RE = re.compile(r"^\d+[.)]\s+")
+
+# Порядок вывода секций в финальном промпте.
+_SECTION_ORDER = ("HEADER", "QUESTS", "FREE", "QUESTIONS")
+
+
+def parse_prompt_file(path: Path) -> tuple[str, dict]:
+    """
+    Читает Prompt.md и собирает текст промпта.
+
+    Поддерживает два формата:
+
+    1. Новый — с секциями `## [HEADER]`, `## [QUESTS]`, `## [FREE]`,
+       `## [QUESTIONS]`. Каждая секция обрабатывается по своим правилам
+       (см. _render_* ниже). Порядок вывода — _SECTION_ORDER.
+
+    2. Старый — без секций. Тогда применяется простая логика:
+       `- [x]` включается, `- [ ]` пропускается, нумерованные строки
+       склеиваются, обычный текст — как отдельный абзац.
+
+    Возвращает (prompt_text, stats).
+    """
+    stats: dict = {
+        "exists": False,
+        "error": False,
+        "active": 0,
+        "skipped": 0,
+        "sections": {},   # {name: bool}
+    }
+
+    if not path.exists():
+        return "", stats
+    stats["exists"] = True
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        stats["error"] = True
+        return "", stats
+
+    # --- Разбиваем на секции ---
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    found_any = False
+
+    for raw_line in text.splitlines():
+        match = _SECTION_RE.match(raw_line)
+        if match:
+            current = match.group(1)
+            found_any = True
+            sections.setdefault(current, [])
+            continue
+
+        if current is not None:
+            sections[current].append(raw_line)
+
+    # --- Старый формат: без секций ---
+    if not found_any:
+        return _render_legacy_prompt(text, stats)
+
+    # --- Новый формат ---
+    for name in _SECTION_ORDER:
+        stats["sections"][name] = name in sections
+
+    rendered: list[str] = []
+    for name in _SECTION_ORDER:
+        chunk = _render_section(name, sections.get(name, []), stats)
+        if chunk:
+            rendered.append(chunk)
+
+    return "\n\n".join(rendered), stats
+
+
+def _render_section(name: str, lines: list[str], stats: dict) -> str:
+    """Диспетчер: рендерит одну секцию по её тегу."""
+    if name in ("HEADER", "QUESTIONS"):
+        return _render_checklist(lines, stats)
+    if name == "QUESTS":
+        return _render_quests(lines, stats)
+    if name == "FREE":
+        return _render_free(lines, stats)
+    return ""
+
+
+def _render_checklist(lines: list[str], stats: dict) -> str:
+    """
+    Простой чеклист: только `- [x] пункты`.
+    Нумерованные и прочие строки игнорируются.
+    """
+    items: list[str] = []
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(">"):
+            continue
+
+        match = _CHECKLIST_RE.match(line)
+        if match:
+            checked = match.group(1).lower() == "x"
+            body = match.group(2).strip()
+            if checked and body:
+                items.append(body)
+                stats["active"] += 1
+            elif not checked:
+                stats["skipped"] += 1
+        # обычные строки просто игнорируем
+
+    return "\n\n".join(items)
+
+
+def _render_quests(lines: list[str], stats: dict) -> str:
+    """
+    Задачи: `- [x] Задача` + её нумерованные шаги — включаются.
+    `- [ ] Задача` — вся задача вместе со шагами пропускается.
+    Пустые строки внутри задачи — игнорируются (склейка абзацев).
+    """
+    tasks: list[str] = []
+    current: list[str] = []
+    active = False
+
+    def flush() -> None:
+        nonlocal active
+        if current and active:
+            tasks.append("\n".join(current))
+        current.clear()
+        active = False
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(">"):
+            continue
+
+        match = _CHECKLIST_RE.match(line)
+        if match:
+            # Начало новой задачи — закрываем предыдущую.
+            flush()
+            active = match.group(1).lower() == "x"
+            body = match.group(2).strip()
+            if active:
+                stats["active"] += 1
+            else:
+                stats["skipped"] += 1
+            if body:
+                current.append(body)
+            continue
+
+        # Нумерованные шаги и обычный текст — часть текущей задачи.
+        if current or active:
+            current.append(line)
+
+    flush()
+    return "\n\n".join(tasks)
+
+
+def _render_free(lines: list[str], stats: dict) -> str:
+    """
+    Свободный текст. Пустые строки — разделители абзацев.
+    Строки-цитаты (`>`) и заголовки (`#`) игнорируются.
+    """
+    blocks: list[str] = []
+    buffer: list[str] = []
+
+    def flush() -> None:
+        if buffer:
+            blocks.append("\n".join(buffer))
+            buffer.clear()
+
+    for raw in lines:
+        line = raw.strip()
+
+        if not line:
+            flush()
+            continue
+        if line.startswith("#") or line.startswith(">"):
+            continue
+
+        buffer.append(line)
+
+    flush()
+
+    stats["active"] += len(blocks)
+    return "\n\n".join(blocks)
+
+
+def _render_legacy_prompt(text: str, stats: dict) -> tuple[str, dict]:
+    """Старая логика — для файлов без секций."""
+    blocks: list[str] = []
+    numbered: list[str] = []
+
+    def flush_numbered() -> None:
+        if numbered:
+            blocks.append("\n".join(numbered))
+            numbered.clear()
+
+    for raw in text.splitlines():
+        line = raw.strip()
+
+        if not line:
+            flush_numbered()
+            continue
+        if line.startswith("#") or line.startswith(">"):
+            continue
+
+        match = _CHECKLIST_RE.match(line)
+        if match:
+            flush_numbered()
+            checked = match.group(1).lower() == "x"
+            body = match.group(2).strip()
+            if checked and body:
+                blocks.append(body)
+                stats["active"] += 1
+            elif not checked:
+                stats["skipped"] += 1
+            continue
+
+        if _NUMBERED_RE.match(line):
+            numbered.append(line)
+            stats["active"] += 1
+            continue
+
+        flush_numbered()
+        blocks.append(line)
+        stats["active"] += 1
+
+    flush_numbered()
+    return "\n\n".join(blocks), stats
+
 
 # Насколько «тяжёлым» считаем контекст в токенах.
 # Типичный лимит одной сессии ChatGPT — 128k токенов,
@@ -605,6 +907,9 @@ def list_candidate_files(
         if path.name.lower() in excluded_files:
             continue
 
+        if path.name.lower() in TOOL_FILENAMES:
+            continue
+
         if resolved_changed is not None:
             try:
                 if path.resolve() not in resolved_changed:
@@ -1023,10 +1328,7 @@ def default_settings() -> dict:
         "truncate_enabled": False,
         "truncate_max_lines": "1000",
         "changed_only_mode": "off",
-        "user_prompt": "",     
-        "greeting_enabled": False,          # ←
-        "code_label_mode": "none",          # ← "none" | "current" | "changes"
-        "help_enabled": False,              # ←         
+        "prompt_attach_enabled": False,
         "recent_projects": [],
         "recent_outputs": {},
     }

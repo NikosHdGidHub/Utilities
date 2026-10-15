@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import prompt_preview
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -58,16 +59,9 @@ class App(tk.Tk):
         settings = core.load_settings()
         cats = settings.get("categories") or {}
 
-        self._initial_user_prompt = str(settings.get("user_prompt", ""))
-
-        # Готовые фразы-обёртки вокруг пользовательского промпта.
-        self._initial_greeting = bool(settings.get("greeting_enabled", False))
-        self._initial_code_label_mode = str(
-            settings.get("code_label_mode", "none")
+        self._initial_prompt_attach = bool(
+            settings.get("prompt_attach_enabled", False)
         )
-        if self._initial_code_label_mode not in ("none", "current", "changes"):
-            self._initial_code_label_mode = "none"
-        self._initial_help = bool(settings.get("help_enabled", False))
 
         self.root_var = tk.StringVar()
         self.output_var = tk.StringVar()
@@ -147,9 +141,10 @@ class App(tk.Tk):
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.advanced_summary_var = tk.StringVar(value="")
 
-        self.greeting_var = tk.BooleanVar(value=self._initial_greeting)
-        self.code_label_var = tk.StringVar(value=self._initial_code_label_mode)
-        self.help_var = tk.BooleanVar(value=self._initial_help)
+        self.prompt_attach_var = tk.BooleanVar(
+            value=self._initial_prompt_attach
+        )
+        self.prompt_status_var = tk.StringVar(value="")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -173,11 +168,13 @@ class App(tk.Tk):
         self.changed_only_display_var.trace_add(
             "write", lambda *_: self._on_changed_mode_changed()
         )
-        self.root_var.trace_add(
-            "write",
-            lambda *_: self._schedule_changed_count_update(),
-        )
+        def _on_root_changed(*_) -> None:
+            self._schedule_changed_count_update()
+            self._update_prompt_status()
+
+        self.root_var.trace_add("write", _on_root_changed)
         self._schedule_changed_count_update()
+        self._update_prompt_status()
 
         # Горячая клавиша: Ctrl+Enter — собрать контекст.
         # Биндим на self (главное окно), событие всплывает от любого
@@ -481,91 +478,40 @@ class App(tk.Tk):
             foreground="#666666",
         ).pack(side="left", padx=(10, 0))
 
-        # ----- 3. Промпт -----
+                # ----- 3. Промпт -----
         prompt_group = ttk.LabelFrame(
-            frame, text="3. Промпт для GPT (необязательно)", padding=8
+            frame, text="3. Промпт (необязательно)", padding=8
         )
         prompt_group.pack(fill="x", pady=(0, 6))
 
-        ttk.Label(
-            prompt_group,
-            text=(
-                "Что сделать с этим контекстом. Текст будет помещён в начало "
-                "файла как задача, а дерево и файлы — как материал для неё. "
-                "Оставь пустым, если хочешь просто передать контекст. "
-                "Галочки ниже добавляют стандартные фразы вокруг твоего текста."
-            ),
-            foreground="#666666",
-            wraplength=900,
-            justify="left",
-        ).pack(anchor="w", pady=(0, 6))
-
-        # Готовые фразы-обёртки.
-        phrases_row = ttk.Frame(prompt_group)
-        phrases_row.pack(fill="x", pady=(0, 6))
+        prompt_row = ttk.Frame(prompt_group)
+        prompt_row.pack(fill="x")
 
         ttk.Checkbutton(
-            phrases_row,
-            text="Приветствие",
-            variable=self.greeting_var,
-        ).pack(side="left", padx=(0, 12))
-
-        ttk.Label(phrases_row, text="│").pack(side="left", padx=(0, 12))
-
-        ttk.Radiobutton(
-            phrases_row,
-            text="Не указывать",
-            variable=self.code_label_var,
-            value="none",
+            prompt_row,
+            text="Прикрепить промпт из Prompt.md",
+            variable=self.prompt_attach_var,
+            command=self._on_prompt_attach_toggle,
         ).pack(side="left")
-
-        ttk.Radiobutton(
-            phrases_row,
-            text="Обозначение кода",
-            variable=self.code_label_var,
-            value="current",
-        ).pack(side="left", padx=(8, 0))
-
-        ttk.Radiobutton(
-            phrases_row,
-            text="Изменение кода",
-            variable=self.code_label_var,
-            value="changes",
-        ).pack(side="left", padx=(8, 0))
-
-        ttk.Label(phrases_row, text="│").pack(side="left", padx=(12, 12))
-
-        ttk.Checkbutton(
-            phrases_row,
-            text="Помощь",
-            variable=self.help_var,
-        ).pack(side="left")
-
-        self.prompt_text = ScrolledText(
-            prompt_group,
-            height=5,
-            wrap="word",
-            font=("Segoe UI", 9),
-        )
-        self.prompt_text.pack(fill="x")
-
-        prompt_actions = ttk.Frame(prompt_group)
-        prompt_actions.pack(fill="x", pady=(4, 0))
 
         ttk.Button(
-            prompt_actions,
-            text="Очистить промпт",
-            command=self._clear_prompt,
-        ).pack(side="right")
+            prompt_row,
+            text="👁 Предпросмотр",
+            command=self._on_preview_prompt,
+        ).pack(side="left", padx=(12, 0))
 
-        if self._initial_user_prompt:
-            self.prompt_text.insert("1.0", self._initial_user_prompt)
+        ttk.Button(
+            prompt_row,
+            text="📝 Открыть в редакторе",
+            command=self._on_open_prompt,
+        ).pack(side="left", padx=(6, 0))
 
-        # <<Modified>> срабатывает один раз, потом флаг надо сбрасывать.
-        self.prompt_text.edit_modified(False)
-        self.prompt_text.bind(
-            "<<Modified>>", self._on_prompt_modified
-        )
+        ttk.Label(
+            prompt_group,
+            textvariable=self.prompt_status_var,
+            foreground="#666666",
+        ).pack(anchor="w", pady=(4, 0))
+
 
         # ----- 4. Результат -----
         result_group = ttk.LabelFrame(frame, text="4. Результат", padding=8)
@@ -676,61 +622,158 @@ class App(tk.Tk):
             self.ext_exclude_var,
             self.truncate_var,
             self.truncate_lines_var,
-            self.greeting_var,
-            self.code_label_var,
-            self.help_var,
+            self.prompt_attach_var,
         )
 
         for var in watched:
             var.trace_add("write", lambda *_: self._schedule_autosave())
 
-    def _on_prompt_modified(self, _event) -> None:
-        if not self.prompt_text.edit_modified():
-            return
-        self.prompt_text.edit_modified(False)
-        self._schedule_autosave()
 
     def _on_hotkey_build(self, _event=None) -> str:
         self.build()
         return "break"
 
-    def _compose_user_prompt(self) -> str:
-        """Собирает финальный промпт из галочек и свободного текста."""
-        parts: list[str] = []
+    def _compose_user_prompt(self, root: Path) -> str:
+        """Читает Prompt.md и возвращает готовый текст промпта."""
+        if not self.prompt_attach_var.get():
+            return ""
 
-        if self.greeting_var.get():
-            parts.append("Привет, давай вместе поработаем.")
+        path = core.prompt_file_path(root)
+        text, _ = core.parse_prompt_file(path)
+        return text
 
-        mode = self.code_label_var.get()
-        if mode == "current":
-            parts.append("Вот мой текущий код.")
-        elif mode == "changes":
-            parts.append("Вот мои правки в коде.")
-
-        body = ""
-        if getattr(self, "prompt_text", None) is not None:
-            body = self.prompt_text.get("1.0", "end-1c").strip()
-        if body:
-            parts.append(body)
-
-        if self.help_var.get():
-            parts.append("Помоги пожалуйста.")
-
-        return "\n\n".join(parts)
-
-    def _clear_prompt(self) -> None:
-        """Очищает только свободный текст промпта, галочки не трогает."""
-        if getattr(self, "prompt_text", None) is None:
-            return
-
-        current = self.prompt_text.get("1.0", "end-1c")
-        if not current.strip():
-            return
-
-        self.prompt_text.delete("1.0", "end")
-        self.prompt_text.edit_modified(False)
+    def _on_prompt_attach_toggle(self) -> None:
+        self._update_prompt_status()
         self._schedule_autosave()
-        self.log_msg("Промпт очищен.")
+
+    def _update_prompt_status(self) -> None:
+        root_text = self.root_var.get().strip()
+        if not root_text:
+            self.prompt_status_var.set("")
+            return
+
+        root = Path(root_text).expanduser()
+        if not root.is_dir():
+            self.prompt_status_var.set("")
+            return
+
+        path = core.prompt_file_path(root)
+        if not path.exists():
+            self.prompt_status_var.set(
+                "Prompt.md ещё не создан — нажми «Предпросмотр» "
+                "или «Открыть в редакторе»."
+            )
+            return
+        
+        _, stats = core.parse_prompt_file(path)
+        if stats.get("error"):
+            self.prompt_status_var.set(
+                "Не удалось прочитать Prompt.md (проверь кодировку)."
+            )
+            return
+
+        found = [
+            name
+            for name in ("HEADER", "QUESTS", "FREE", "QUESTIONS")
+            if stats["sections"].get(name)
+        ]
+        sections_str = " / ".join(found) if found else "—"
+
+        self.prompt_status_var.set(
+            f"Prompt.md: активных {stats['active']}  •  "
+            f"снятых {stats['skipped']}  •  "
+            f"секции: {sections_str}"
+        )
+
+    def _on_open_prompt(self) -> None:
+        """Открывает Prompt.md во внешнем редакторе."""
+        root_text = self.root_var.get().strip()
+        if not root_text:
+            messagebox.showwarning(
+                APP_TITLE,
+                "Сначала выберите каталог проекта.",
+            )
+            return
+
+        root = Path(root_text).expanduser().resolve()
+        if not root.is_dir():
+            messagebox.showwarning(
+                APP_TITLE,
+                "Каталог проекта не существует.",
+            )
+            return
+
+        path, created = core.ensure_prompt_file(root)
+
+        if not path.exists():
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось создать файл:\n{path}",
+            )
+            return
+
+        if created:
+            self.log_msg(f"Создан шаблон промпта: {path}")
+        else:
+            self.log_msg(f"Открываю в редакторе: {path}")
+
+        if self._open_path_external(path):
+            self._update_prompt_status()
+
+    def _on_preview_prompt(self) -> None:
+        """Открывает модалку с распарсенным промптом."""
+        root_text = self.root_var.get().strip()
+        if not root_text:
+            messagebox.showwarning(
+                APP_TITLE,
+                "Сначала выберите каталог проекта.",
+            )
+            return
+
+        root = Path(root_text).expanduser().resolve()
+        if not root.is_dir():
+            messagebox.showwarning(
+                APP_TITLE,
+                "Каталог проекта не существует.",
+            )
+            return
+
+        path, created = core.ensure_prompt_file(root)
+
+        if not path.exists():
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось создать файл:\n{path}",
+            )
+            return
+
+        if created:
+            self.log_msg(f"Создан шаблон промпта: {path}")
+
+        prompt_preview.show_preview(
+            self,
+            path,
+            on_open_editor=lambda: self._open_path_external(path),
+        )
+        self._update_prompt_status()
+
+    def _open_path_external(self, path: Path) -> bool:
+        """Открывает файл ассоциированным приложением. True при успехе."""
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(str(path))
+            elif system == "Darwin":
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+            return True
+        except Exception as exc:
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось открыть файл:\n\n{exc}",
+            )
+            return False
 
     def _schedule_autosave(self) -> None:
         if self._autosave_after_id is not None:
@@ -985,6 +1028,7 @@ class App(tk.Tk):
         else:
             self.output_var.set(str(p / f"{p.name}_context.txt"))
 
+        self._update_prompt_status()
         self.status_var.set("Выбран проект из недавних.")
         self.log_msg(f"Недавний проект: {p}")
 
@@ -1267,18 +1311,10 @@ class App(tk.Tk):
         self._changed_mode = mode
         self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL[mode])
 
-        if getattr(self, "prompt_text", None) is not None:
-            self.prompt_text.delete("1.0", "end")
-
-        defaults_greeting = bool(defaults.get("greeting_enabled", False))
-        defaults_mode = str(defaults.get("code_label_mode", "none"))
-        if defaults_mode not in ("none", "current", "changes"):
-            defaults_mode = "none"
-        defaults_help = bool(defaults.get("help_enabled", False))
-
-        self.greeting_var.set(defaults_greeting)
-        self.code_label_var.set(defaults_mode)
-        self.help_var.set(defaults_help)
+        self.prompt_attach_var.set(
+            bool(defaults.get("prompt_attach_enabled", False))
+        )
+        self._update_prompt_status()
 
         self.selected_files = None
         self._selected_files_root = None
@@ -1325,16 +1361,9 @@ class App(tk.Tk):
             "truncate_enabled": self.truncate_var.get(),
             "truncate_max_lines": self.truncate_lines_var.get(),
             "changed_only_mode": self._changed_mode,
+            "prompt_attach_enabled": self.prompt_attach_var.get(),
             "recent_projects": list(self.recent_projects),
             "recent_outputs": dict(self.recent_outputs),
-            "user_prompt": (
-                self.prompt_text.get("1.0", "end-1c")
-                if getattr(self, "prompt_text", None) is not None
-                else ""
-            ),
-            "greeting_enabled": self.greeting_var.get(),
-            "code_label_mode": self.code_label_var.get(),
-            "help_enabled": self.help_var.get(),
         }
         
 
@@ -1423,6 +1452,7 @@ class App(tk.Tk):
 
         self.root_var.set(str(root))
         self.output_var.set(str(root / f"{root.name}_context.txt"))
+        self._update_prompt_status()
 
         # Сброс ручного выбора при смене проекта.
         self.selected_files = None
@@ -1585,7 +1615,7 @@ class App(tk.Tk):
 
         output_path = Path(self.output_var.get()).expanduser()
 
-        user_prompt = self._compose_user_prompt()
+        user_prompt = self._compose_user_prompt(root)
         if user_prompt:
             self.log_msg(
                 f"Промпт: {len(user_prompt)} символов — будет вставлен в начало."
