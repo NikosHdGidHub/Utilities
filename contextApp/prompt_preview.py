@@ -28,7 +28,7 @@ class PromptPreviewDialog(tk.Toplevel):
         self,
         parent: tk.Misc,
         prompt_path: Path,
-        on_open_editor: Callable[[], None] | None = None,
+        on_open_editor: Callable[[], object] | None = None,
     ) -> None:
         super().__init__(parent)  # type: ignore[arg-type]
 
@@ -199,7 +199,7 @@ class PromptPreviewDialog(tk.Toplevel):
 def show_preview(
     parent: tk.Misc,
     prompt_path: Path,
-    on_open_editor: Callable[[], None] | None = None,
+    on_open_editor: Callable[[], object] | None = None,
 ) -> None:
     """Открывает модальный предпросмотр и ждёт закрытия."""
     dialog = PromptPreviewDialog(parent, prompt_path, on_open_editor)

@@ -1430,6 +1430,15 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
         self.log.after_idle(self.log.see, "end")
 
+    def _play_success_sound(self) -> None:
+        """Короткий системный сигнал «успех». Тихо молчит на не-Windows."""
+        try:
+            if platform.system() == "Windows":
+                import winsound
+                winsound.MessageBeep(winsound.MB_OK)
+        except Exception:
+            pass     
+
     def add_ext(self, ext: str) -> None:
         current = self.ext_filter_var.get().strip()
         existing = core.parse_extensions(current)
@@ -1543,12 +1552,17 @@ class App(tk.Tk):
 
     # ---------- Действия ----------
 
-    def build(self) -> None:
+    def _build_context(self) -> bool:
+        """Собирает контекст и пишет TXT. True при успехе.
+
+        Все диалоговые окна — только для ошибок. Успех отражается
+        в статусной строке, журнале и звуковом сигнале.
+        """
         try:
             root, max_mb = self.get_settings()
         except ValueError as exc:
             messagebox.showwarning(APP_TITLE, str(exc))
-            return
+            return False
 
         enabled_categories = {
             "code": self.code_var.get(),
@@ -1590,13 +1604,9 @@ class App(tk.Tk):
 
         whitelist = self._current_whitelist(root)
         if whitelist is not None:
-            self.log_msg(
-                f"Ручной выбор: {len(whitelist)} файл(ов)."
-            )
+            self.log_msg(f"Ручной выбор: {len(whitelist)} файл(ов).")
 
-        changed_files, changed_label = self._get_changed_files_for_build(
-            root
-        )
+        changed_files, changed_label = self._get_changed_files_for_build(root)
         if changed_files is not None:
             self.log_msg(
                 f"Только изменённые ({changed_label}): "
@@ -1606,8 +1616,6 @@ class App(tk.Tk):
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
 
-        # Путь к выходному файлу вычисляем ДО сборки — чтобы
-        # исключить его из скана (иначе файл попадёт в самого себя).
         if not self.output_var.get().strip():
             self.output_var.set(
                 str(root / f"{root.name}_context.txt")
@@ -1618,7 +1626,8 @@ class App(tk.Tk):
         user_prompt = self._compose_user_prompt(root)
         if user_prompt:
             self.log_msg(
-                f"Промпт: {len(user_prompt)} символов — будет вставлен в начало."
+                f"Промпт: {len(user_prompt)} символов — "
+                "будет вставлен в начало."
             )
 
         try:
@@ -1646,12 +1655,12 @@ class App(tk.Tk):
                 APP_TITLE,
                 f"Не удалось собрать контекст:\n\n{exc}",
             )
-            return
+            return False
 
         self.context = context
 
         if not self._write_context(output_path):
-            return
+            return False
 
         tokens_str = core.format_tokens(stats["tokens"])
         warning = (
@@ -1690,21 +1699,15 @@ class App(tk.Tk):
             )
 
         self.status_var.set("Готово. Контекст собран.")
+        return True
 
-        messagebox.showinfo(
-            APP_TITLE,
-            "Готово!\n\n"
-            f"Включено файлов: {stats['included']}\n"
-            f"Размер: {core.format_size(stats['size'])}\n"
-            f"Оценка токенов: ~{tokens_str}",
-        )
+    def build(self) -> None:
+        if self._build_context():
+            self._play_success_sound()
 
     def copy(self) -> None:
-        if not self.context:
-            messagebox.showwarning(
-                APP_TITLE,
-                "Сначала соберите контекст.",
-            )
+        """Собирает контекст и сразу копирует в буфер обмена."""
+        if not self._build_context():
             return
 
         try:
@@ -1712,39 +1715,28 @@ class App(tk.Tk):
             self.clipboard_append(self.context)
             self.update()
 
-            self.status_var.set(
-                "Контекст скопирован в буфер обмена."
-            )
-
-            self.log_msg(
-                "Скопировано в буфер: "
-                f"{core.format_size(len(self.context.encode('utf-8')))}"
-            )
-
-            messagebox.showinfo(
-                APP_TITLE,
-                "Готово!\n\n"
-                "Теперь можно вставить контекст в ChatGPT через Ctrl+V.",
-            )
+            size = core.format_size(len(self.context.encode("utf-8")))
+            self.status_var.set("Контекст скопирован в буфер обмена.")
+            self.log_msg(f"Скопировано в буфер: {size}")
+            self._play_success_sound()
 
         except tk.TclError as exc:
             messagebox.showerror(
                 APP_TITLE,
                 f"Ошибка буфера обмена:\n\n{exc}",
             )
-
+    
+    
     def open_output_file(self) -> None:
-        output_text = self.output_var.get().strip()
+        """Собирает контекст и сразу открывает TXT."""
+        if not self._build_context():
+            return
 
+        output_text = self.output_var.get().strip()
         if not output_text:
-            messagebox.showwarning(
-                APP_TITLE,
-                "Путь к файлу не задан.",
-            )
             return
 
         path = Path(output_text).expanduser()
-
         if not path.exists():
             messagebox.showwarning(
                 APP_TITLE,
@@ -1752,21 +1744,8 @@ class App(tk.Tk):
             )
             return
 
-        try:
-            system = platform.system()
-
-            if system == "Windows":
-                os.startfile(str(path))
-            elif system == "Darwin":
-                subprocess.run(["open", str(path)], check=False)
-            else:
-                subprocess.run(["xdg-open", str(path)], check=False)
-
-        except Exception as exc:
-            messagebox.showerror(
-                APP_TITLE,
-                f"Не удалось открыть файл:\n\n{exc}",
-            )
+        if self._open_path_external(path):
+            self._play_success_sound()
 
     def open_folder(self) -> None:
         output_text = self.output_var.get().strip()

@@ -264,9 +264,12 @@ def parse_prompt_file(path: Path) -> tuple[str, dict]:
     for raw_line in text.splitlines():
         match = _SECTION_RE.match(raw_line)
         if match:
-            current = match.group(1)
+            name = match.group(1)
+            if not name:
+                continue
+            current = name
             found_any = True
-            sections.setdefault(current, [])
+            sections.setdefault(name, [])
             continue
 
         if current is not None:
