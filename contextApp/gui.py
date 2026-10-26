@@ -119,6 +119,7 @@ class App(tk.Tk):
             value=CHANGED_KEY_TO_LABEL[_initial_mode]
         )
         self.changed_count_var = tk.StringVar(value="")
+        self.changed_warning_var = tk.StringVar(value="")
         self._changed_count_after_id: str | None = None
 
         self.recent_projects: list[str] = list(
@@ -175,6 +176,7 @@ class App(tk.Tk):
         self.root_var.trace_add("write", _on_root_changed)
         self._schedule_changed_count_update()
         self._update_prompt_status()
+        self._update_changed_warning()
 
         # Горячая клавиша: Ctrl+Enter — собрать контекст.
         # Биндим на self (главное окно), событие всплывает от любого
@@ -476,6 +478,13 @@ class App(tk.Tk):
             changed_row,
             textvariable=self.changed_count_var,
             foreground="#666666",
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Label(
+            changed_row,
+            textvariable=self.changed_warning_var,
+            foreground="#B8860B",  # тёмно-золотой, читается на белом
+            font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0))
 
                 # ----- 3. Промпт -----
@@ -886,8 +895,17 @@ class App(tk.Tk):
     def _on_changed_mode_changed(self) -> None:
         label = self.changed_only_display_var.get()
         self._changed_mode = CHANGED_LABEL_TO_KEY.get(label, "off")
+        self._update_changed_warning()
         self._schedule_changed_count_update()
         self._schedule_autosave()
+
+    def _update_changed_warning(self) -> None:
+        if self._changed_mode == "off":
+            self.changed_warning_var.set("")
+        else:
+            self.changed_warning_var.set(
+                "⚠  Внимание — в сборку попадут не все файлы!"
+            )
 
     def _schedule_changed_count_update(self) -> None:
         if self._changed_count_after_id is not None:
@@ -1310,6 +1328,7 @@ class App(tk.Tk):
             mode = "off"
         self._changed_mode = mode
         self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL[mode])
+        self._update_changed_warning()
 
         self.prompt_attach_var.set(
             bool(defaults.get("prompt_attach_enabled", False))

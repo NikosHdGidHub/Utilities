@@ -480,6 +480,14 @@ def category(path: Path) -> str | None:
     if suffix in STYLE_EXTENSIONS:
         return "style"
 
+    # Lock-файлы (package-lock.json, yarn.lock, pnpm-lock.yaml,
+    # poetry.lock, Pipfile.lock) — это отдельная категория "output",
+    # а не "config". Расширение у них бывает .json / .yaml / .lock,
+    # но по смыслу это lock-файлы зависимостей. Проверяем ДО конфигов,
+    # чтобы категория "output" работала независимо от конфигов.
+    if name in OUTPUT_NAMES:
+        return "output"
+
     if (
         name in DOTFILE_CONFIG_NAMES
         or suffix in CONFIG_EXTENSIONS
@@ -489,9 +497,6 @@ def category(path: Path) -> str | None:
 
     if name in DOCUMENT_NAMES or suffix in DOCUMENT_EXTENSIONS:
         return "document"
-
-    if name in OUTPUT_NAMES:
-        return "output"
 
     if suffix in TEXT_EXTENSIONS:
         return "text"
