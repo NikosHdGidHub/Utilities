@@ -216,6 +216,12 @@ class App(tk.Tk):
         # На macOS принят Cmd+Enter.
         self.bind("<Command-Return>", self._on_hotkey_build)
 
+        # При возврате фокуса на главное окно перечитываем git-состояние:
+        # пользователь мог сделать новый коммит в терминале / IDE.
+        # Дебаунс внутри _schedule_git_refresh() защищает от лишних
+        # вызовов git при переключении между виджетами.
+        self.bind("<FocusIn>", self._on_app_focus_in, add="+")
+
     # ---------- UI ----------
 
     def setup_ui(self) -> None:
@@ -504,6 +510,13 @@ class App(tk.Tk):
         )
         self.changed_combo.pack(side="left")
 
+        ttk.Button(
+            changed_row,
+            text="↻",
+            width=3,
+            command=self._on_manual_git_refresh,
+        ).pack(side="left", padx=(10, 0))
+
         ttk.Label(
             changed_row,
             textvariable=self.changed_count_var,
@@ -516,6 +529,8 @@ class App(tk.Tk):
             foreground="#B8860B",  # тёмно-золотой, читается на белом
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0))
+
+
 
         # Строка под селектором: предупреждение «git не найден»
         # и/или мелкая информация о найденном репозитории.
@@ -975,6 +990,20 @@ class App(tk.Tk):
         self._schedule_changed_count_update()
         self._schedule_autosave()
 
+    def _on_app_focus_in(self, event) -> None:
+        # FocusIn всплывает от любого дочернего виджета — реагируем
+        # только на фокус самого окна.
+        if event.widget is not self:
+            return
+        self._schedule_git_refresh()
+
+    def _on_manual_git_refresh(self) -> None:
+        # Ручное обновление: без дебаунса, сразу.
+        if self._git_refresh_after_id is not None:
+            self.after_cancel(self._git_refresh_after_id)
+            self._git_refresh_after_id = None
+        self._refresh_git_state()
+
     def _schedule_git_refresh(self) -> None:
         if self._git_refresh_after_id is not None:
             self.after_cancel(self._git_refresh_after_id)
@@ -1078,6 +1107,36 @@ class App(tk.Tk):
                 self.log_msg(
                     f"Коммит «{subject}» не найден среди последних 15 — "
                     "режим сброшен на «Выключено»."
+                )
+                self._changed_mode = "off"
+                self._changed_commit_hash = None
+                self._changed_commit_subject = ""
+                self.changed_only_display_var.set(
+                    CHANGED_KEY_TO_LABEL["off"]
+                )
+
+        # Периодическое обновление (фокус / кнопка ↻):
+        # метка содержит относительное время («2 ч назад»), которое
+        # со временем меняется — поэтому сверяем по хешу и
+        # переустанавливаем метку. Иначе выбор «слетит» из-за
+        # устаревшего текста.
+        elif (
+            reason == "ok"
+            and self._changed_mode == git_utils.MODE_SINCE_COMMIT
+            and self._changed_commit_hash
+        ):
+            matched = next(
+                (c for c in commits
+                 if c["hash"] == self._changed_commit_hash),
+                None,
+            )
+            if matched is not None:
+                self.changed_only_display_var.set(matched["label"])
+            else:
+                self.log_msg(
+                    f"Коммит «{self._changed_commit_subject}» больше "
+                    "не в списке последних 15 — режим сброшен "
+                    "на «Выключено»."
                 )
                 self._changed_mode = "off"
                 self._changed_commit_hash = None
