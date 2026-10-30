@@ -8,25 +8,15 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import date, datetime, time, timedelta
+import time
 from pathlib import Path
 
 
 MODE_OFF = "off"
 MODE_UNCOMMITTED = "uncommitted"
-MODE_SINCE_LAST_COMMIT = "since_last_commit"
-MODE_LAST_2_COMMITS = "last_2_commits"
-MODE_YESTERDAY = "yesterday"
-MODE_DAY_BEFORE_YESTERDAY = "day_before_yesterday"
+MODE_SINCE_COMMIT = "since_commit"
 
-ALL_MODES = (
-    MODE_OFF,
-    MODE_UNCOMMITTED,
-    MODE_SINCE_LAST_COMMIT,
-    MODE_LAST_2_COMMITS,
-    MODE_YESTERDAY,
-    MODE_DAY_BEFORE_YESTERDAY,
-)
+ALL_MODES = (MODE_OFF, MODE_UNCOMMITTED, MODE_SINCE_COMMIT)
 
 
 def _run_git(
@@ -34,11 +24,6 @@ def _run_git(
     args: list[str],
     timeout: int = 15,
 ) -> tuple[bool, str]:
-    """
-    Запускает git-команду в каталоге root.
-
-    Возвращает (ok, output_or_error). Никогда не бросает.
-    """
     try:
         result = subprocess.run(
             [
@@ -62,7 +47,6 @@ def _run_git(
 
 
 def get_repo_root(path: Path) -> Path | None:
-    """Возвращает корень git-репозитория для указанного пути или None."""
     ok, output = _run_git(path, ["rev-parse", "--show-toplevel"])
     if not ok:
         return None
@@ -73,7 +57,6 @@ def get_repo_root(path: Path) -> Path | None:
 
 
 def _resolve_files(repo_root: Path, rel_paths: list[str]) -> set[Path]:
-    """Преобразует относительные пути (от repo_root) в существующие файлы."""
     result: set[Path] = set()
     for rel in rel_paths:
         rel = rel.strip()
@@ -89,7 +72,6 @@ def _resolve_files(repo_root: Path, rel_paths: list[str]) -> set[Path]:
 
 
 def _files_uncommitted(root: Path, repo_root: Path) -> set[Path]:
-    """Изменённые файлы, которые ещё не в коммите."""
     ok, output = _run_git(root, [
         "status",
         "--porcelain",
@@ -112,76 +94,37 @@ def _files_uncommitted(root: Path, repo_root: Path) -> set[Path]:
     return _resolve_files(repo_root, paths)
 
 
-def _files_since_last_commit(root: Path, repo_root: Path) -> set[Path]:
-    """Файлы, изменённые в самом последнем коммите (HEAD~1..HEAD).
-
-    Если это первый коммит в репозитории — сравниваем с пустым
-    деревом, то есть показываем всё, что вошло в этот коммит.
-    """
-    ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames", "HEAD~1", "HEAD",
-    ])
-    if ok:
-        return _resolve_files(repo_root, output.splitlines())
-
-    # Первый коммит: HEAD~1 не существует, берём empty tree.
-    empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-    ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames", empty_tree, "HEAD",
-    ])
-    if ok:
-        return _resolve_files(repo_root, output.splitlines())
-
-    return set()
-
-
-def _files_last_2_commits(root: Path, repo_root: Path) -> set[Path]:
-    """Файлы, изменённые в последних двух коммитах."""
-    ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames", "HEAD~2", "HEAD",
-    ])
-    if ok:
-        return _resolve_files(repo_root, output.splitlines())
-
-    empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-    ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames", empty_tree, "HEAD",
-    ])
-    if ok:
-        return _resolve_files(repo_root, output.splitlines())
-
-    return set()
-
-
-def _files_by_dates(
+def _files_since_commit(
     root: Path,
     repo_root: Path,
-    since: datetime,
-    until: datetime,
+    commit_hash: str,
 ) -> set[Path]:
-    """Файлы, упомянутые в коммитах в диапазоне дат."""
+    """Файлы, изменённые между <commit>^ и HEAD (включая сам коммит)."""
     ok, output = _run_git(root, [
-        "log",
-        f"--since={since.isoformat(sep=' ')}",
-        f"--until={until.isoformat(sep=' ')}",
-        "--name-only",
-        "--pretty=format:",
-        "--no-renames",
+        "diff", "--name-only", "--no-renames",
+        f"{commit_hash}^..HEAD",
     ])
-    if not ok:
-        return set()
+    if ok:
+        return _resolve_files(repo_root, output.splitlines())
 
-    paths = [line for line in output.splitlines() if line.strip()]
-    return _resolve_files(repo_root, paths)
+    # Первый коммит в репозитории — родителя нет, берём пустое дерево.
+    empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    ok, output = _run_git(root, [
+        "diff", "--name-only", "--no-renames",
+        empty_tree, "HEAD",
+    ])
+    if ok:
+        return _resolve_files(repo_root, output.splitlines())
+
+    return set()
 
 
-def get_changed_files(root: Path, mode: str) -> set[Path] | None:
-    """
-    Возвращает набор абсолютных путей изменённых файлов.
-
-    None — фильтр выключен (mode == "off").
-    set() — фильтр включён, но ничего не найдено или проект не git.
-    """
+def get_changed_files(
+    root: Path,
+    mode: str,
+    commit_hash: str | None = None,
+) -> set[Path] | None:
+    """None — фильтр выключен. set() — включён, но ничего не нашли."""
     if mode == MODE_OFF:
         return None
 
@@ -192,24 +135,70 @@ def get_changed_files(root: Path, mode: str) -> set[Path] | None:
     if mode == MODE_UNCOMMITTED:
         return _files_uncommitted(root, repo_root)
 
-    if mode == MODE_SINCE_LAST_COMMIT:
-        return _files_since_last_commit(root, repo_root)
-
-    if mode == MODE_LAST_2_COMMITS:
-        return _files_last_2_commits(root, repo_root)
-
-    if mode == MODE_YESTERDAY:
-        today = date.today()
-        yesterday = today - timedelta(days=1)
-        since = datetime.combine(yesterday, time(0, 0, 0))
-        until = datetime.combine(yesterday, time(23, 59, 59))
-        return _files_by_dates(root, repo_root, since, until)
-
-    if mode == MODE_DAY_BEFORE_YESTERDAY:
-        today = date.today()
-        day = today - timedelta(days=2)
-        since = datetime.combine(day, time(0, 0, 0))
-        until = datetime.combine(day, time(23, 59, 59))
-        return _files_by_dates(root, repo_root, since, until)
+    if mode == MODE_SINCE_COMMIT:
+        if not commit_hash:
+            return set()
+        return _files_since_commit(root, repo_root, commit_hash)
 
     return None
+
+
+# ---------- Список последних коммитов для выпадающего списка ----------
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 1] + "…"
+
+
+def _relative_time(timestamp: int) -> str:
+    if timestamp <= 0:
+        return "?"
+    diff = int(time.time()) - timestamp
+    if diff < 0:
+        diff = 0
+    if diff < 60:
+        return "только что"
+    if diff < 3600:
+        return f"{diff // 60} мин назад"
+    if diff < 86400:
+        return f"{diff // 3600} ч назад"
+    if diff < 86400 * 30:
+        return f"{diff // 86400} дн назад"
+    if diff < 86400 * 365:
+        return f"{diff // (86400 * 30)} мес назад"
+    return f"{diff // (86400 * 365)} г назад"
+
+
+def get_recent_commits(root: Path, limit: int = 15) -> list[dict]:
+    """Последние limit коммитов.
+
+    Каждый элемент: {hash, short_hash, subject, timestamp, label}.
+    label = "<subject[:48]> · <относительное время>".
+    """
+    ok, output = _run_git(root, [
+        "log",
+        f"-n{limit}",
+        "--pretty=format:%H%x00%h%x00%s%x00%ct",
+    ])
+    if not ok:
+        return []
+
+    commits: list[dict] = []
+    for line in output.splitlines():
+        parts = line.split(chr(0))
+        if len(parts) != 4:
+            continue
+        full_hash, short_hash, subject, ct_str = parts
+        try:
+            timestamp = int(ct_str)
+        except ValueError:
+            timestamp = 0
+        commits.append({
+            "hash": full_hash,
+            "short_hash": short_hash,
+            "subject": subject,
+            "timestamp": timestamp,
+            "label": f"{_truncate(subject, 48)} · {_relative_time(timestamp)}",
+        })
+    return commits

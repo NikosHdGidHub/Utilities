@@ -1338,6 +1338,7 @@ def default_settings() -> dict:
         "truncate_enabled": False,
         "truncate_max_lines": "1000",
         "changed_only_mode": "off",
+        "changed_commit_subject": "",
         "prompt_attach_enabled": False,
         "recent_projects": [],
         "recent_outputs": {},

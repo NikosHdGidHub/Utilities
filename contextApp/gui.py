@@ -25,18 +25,14 @@ QUICK_EXTENSIONS = (
     ".json",
 )
 
-# Режимы фильтра «только изменённые»: (ключ, отображаемая метка).
-CHANGED_MODES: tuple[tuple[str, str], ...] = (
+# Статические режимы фильтра «только изменённые»: (ключ, метка).
+# Коммиты добавляются динамически в выпадающий список.
+CHANGED_MODES_STATIC: tuple[tuple[str, str], ...] = (
     ("off", "Выключено"),
     ("uncommitted", "Незакоммиченные"),
-    ("since_last_commit", "Из последнего коммита"),
-    ("last_2_commits", "Последние 2 коммита"),
-    ("yesterday", "Вчера"),
-    ("day_before_yesterday", "Позавчера"),
 )
 
-CHANGED_LABEL_TO_KEY = {label: key for key, label in CHANGED_MODES}
-CHANGED_KEY_TO_LABEL = {key: label for key, label in CHANGED_MODES}
+CHANGED_KEY_TO_LABEL = {key: label for key, label in CHANGED_MODES_STATIC}
 
 # Задержка автосохранения настроек после последнего изменения.
 AUTOSAVE_DELAY_MS = 1500
@@ -111,15 +107,35 @@ class App(tk.Tk):
         )
 
         # Фильтр «только изменённые».
-        _initial_mode = str(settings.get("changed_only_mode", "off"))
-        if _initial_mode not in CHANGED_KEY_TO_LABEL:
-            _initial_mode = "off"
-        self._changed_mode = _initial_mode
+        _saved_mode = str(settings.get("changed_only_mode", "off"))
+        _saved_subject = str(settings.get("changed_commit_subject", ""))
+
+        self._changed_commit_hash: str | None = None
+        self._changed_commit_subject: str = _saved_subject
+        self._recent_commits: list[dict] = []
+        self._repo_root: Path | None = None
+        self._git_refresh_after_id: str | None = None
+
+        # Хотим восстановить сохранённый коммит при первом успешном
+        # обновлении git-состояния (по совпадению subject).
+        self._pending_commit_restore = (
+            _saved_mode == "since_commit" and bool(_saved_subject)
+        )
+
+        if _saved_mode not in CHANGED_KEY_TO_LABEL:
+            _saved_mode = "off"
+        if self._pending_commit_restore:
+            # Пока не подтвердили наличие коммита — показываем «Выключено».
+            _saved_mode = "off"
+
+        self._changed_mode = _saved_mode
         self.changed_only_display_var = tk.StringVar(
-            value=CHANGED_KEY_TO_LABEL[_initial_mode]
+            value=CHANGED_KEY_TO_LABEL[self._changed_mode]
         )
         self.changed_count_var = tk.StringVar(value="")
         self.changed_warning_var = tk.StringVar(value="")
+        self.git_warn_var = tk.StringVar(value="")
+        self.git_info_var = tk.StringVar(value="")
         self._changed_count_after_id: str | None = None
 
         self.recent_projects: list[str] = list(
@@ -170,11 +186,24 @@ class App(tk.Tk):
             "write", lambda *_: self._on_changed_mode_changed()
         )
         def _on_root_changed(*_) -> None:
-            self._schedule_changed_count_update()
+            # При смене корня выбранный коммит относится к старому репо —
+            # сбрасываем. Если ещё ждём восстановление из настроек —
+            # не трогаем, оно сработает после refresh.
+            if (
+                not self._pending_commit_restore
+                and self._changed_mode == git_utils.MODE_SINCE_COMMIT
+            ):
+                self._changed_mode = "off"
+                self._changed_commit_hash = None
+                self._changed_commit_subject = ""
+                self.changed_only_display_var.set(
+                    CHANGED_KEY_TO_LABEL["off"]
+                )
+            self._schedule_git_refresh()
             self._update_prompt_status()
 
         self.root_var.trace_add("write", _on_root_changed)
-        self._schedule_changed_count_update()
+        self._schedule_git_refresh()
         self._update_prompt_status()
         self._update_changed_warning()
 
@@ -468,9 +497,9 @@ class App(tk.Tk):
         self.changed_combo = ttk.Combobox(
             changed_row,
             textvariable=self.changed_only_display_var,
-            values=[label for _, label in CHANGED_MODES],
+            values=[label for _, label in CHANGED_MODES_STATIC],
             state="readonly",
-            width=24,
+            width=48,
         )
         self.changed_combo.pack(side="left")
 
@@ -486,6 +515,31 @@ class App(tk.Tk):
             foreground="#B8860B",  # тёмно-золотой, читается на белом
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0))
+
+        # Строка под селектором: предупреждение «git не найден»
+        # и/или мелкая информация о найденном репозитории.
+        git_row = ttk.Frame(include_group)
+        git_row.grid(
+            row=6,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(4, 0),
+        )
+
+        ttk.Label(
+            git_row,
+            textvariable=self.git_warn_var,
+            foreground="#B8860B",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Label(
+            git_row,
+            textvariable=self.git_info_var,
+            foreground="#888888",
+            font=("Segoe UI", 8),
+        ).pack(side="left", padx=(8, 0))
 
                 # ----- 3. Промпт -----
         prompt_group = ttk.LabelFrame(
@@ -894,10 +948,145 @@ class App(tk.Tk):
 
     def _on_changed_mode_changed(self) -> None:
         label = self.changed_only_display_var.get()
-        self._changed_mode = CHANGED_LABEL_TO_KEY.get(label, "off")
+
+        if label in CHANGED_KEY_TO_LABEL:
+            self._changed_mode = CHANGED_KEY_TO_LABEL[label]
+            self._changed_commit_hash = None
+            self._changed_commit_subject = ""
+        else:
+            matched = next(
+                (c for c in self._recent_commits if c["label"] == label),
+                None,
+            )
+            if matched is not None:
+                self._changed_mode = git_utils.MODE_SINCE_COMMIT
+                self._changed_commit_hash = matched["hash"]
+                self._changed_commit_subject = matched["subject"]
+            else:
+                self._changed_mode = "off"
+                self._changed_commit_hash = None
+                self._changed_commit_subject = ""
+                self.changed_only_display_var.set(
+                    CHANGED_KEY_TO_LABEL["off"]
+                )
+
         self._update_changed_warning()
         self._schedule_changed_count_update()
         self._schedule_autosave()
+
+    def _schedule_git_refresh(self) -> None:
+        if self._git_refresh_after_id is not None:
+            self.after_cancel(self._git_refresh_after_id)
+        self._git_refresh_after_id = self.after(
+            400, self._refresh_git_state
+        )
+
+    def _refresh_git_state(self) -> None:
+        self._git_refresh_after_id = None
+
+        root_text = self.root_var.get().strip()
+        if not root_text:
+            self._apply_git_state(reason="no_root")
+            return
+
+        root = Path(root_text).expanduser()
+        if not root.is_dir():
+            self._apply_git_state(reason="no_root")
+            return
+
+        repo_root = git_utils.get_repo_root(root)
+        if repo_root is None:
+            self._apply_git_state(reason="no_git")
+            return
+
+        commits = git_utils.get_recent_commits(root, 15)
+        self._apply_git_state(
+            reason="ok",
+            repo_root=repo_root,
+            commits=commits,
+            project_root=root,
+        )
+
+    def _apply_git_state(
+        self,
+        reason: str,
+        repo_root: Path | None = None,
+        commits: list[dict] | None = None,
+        project_root: Path | None = None,
+    ) -> None:
+        commits = commits or []
+        self._repo_root = repo_root
+        self._recent_commits = commits
+
+        static_labels = [label for _, label in CHANGED_MODES_STATIC]
+        commit_labels = [c["label"] for c in commits]
+        self.changed_combo.configure(
+            values=static_labels + commit_labels
+        )
+
+        if reason == "no_git":
+            self.changed_combo.configure(state="disabled")
+            self.git_info_var.set("")
+            self.git_warn_var.set(
+                "⚠  Git не найден в выбранном каталоге!"
+            )
+
+            if self._changed_mode != "off":
+                self._changed_mode = "off"
+                self._changed_commit_hash = None
+                self._changed_commit_subject = ""
+                self.changed_only_display_var.set(
+                    CHANGED_KEY_TO_LABEL["off"]
+                )
+                self.log_msg(
+                    "Git не найден — режим «Только изменённые» выключен."
+                )
+
+        else:
+            self.changed_combo.configure(state="readonly")
+            self.git_warn_var.set("")
+            if reason == "ok" and repo_root is not None:
+                repo_str = str(repo_root)
+                show_parent_hint = (
+                    project_root is not None
+                    and repo_root.resolve() != project_root.resolve()
+                )
+                if show_parent_hint:
+                    self.git_info_var.set(
+                        f"Git: {repo_str}  (родительский каталог)"
+                    )
+                else:
+                    self.git_info_var.set(f"Git: {repo_str}")
+            else:
+                self.git_info_var.set("")
+
+        # Восстановление сохранённого коммита — один раз при первом
+        # успешном обновлении состояния.
+        if self._pending_commit_restore and reason == "ok":
+            self._pending_commit_restore = False
+            subject = self._changed_commit_subject
+            matched = next(
+                (c for c in commits if c["subject"] == subject),
+                None,
+            )
+            if matched is not None:
+                self._changed_mode = git_utils.MODE_SINCE_COMMIT
+                self._changed_commit_hash = matched["hash"]
+                self.changed_only_display_var.set(matched["label"])
+            else:
+                self.log_msg(
+                    f"Коммит «{subject}» не найден среди последних 15 — "
+                    "режим сброшен на «Выключено»."
+                )
+                self._changed_mode = "off"
+                self._changed_commit_hash = None
+                self._changed_commit_subject = ""
+                self.changed_only_display_var.set(
+                    CHANGED_KEY_TO_LABEL["off"]
+                )
+
+        self._update_changed_warning()
+        self._update_changed_count_inline()
 
     def _update_changed_warning(self) -> None:
         if self._changed_mode == "off":
@@ -916,7 +1105,9 @@ class App(tk.Tk):
 
     def _update_changed_count(self) -> None:
         self._changed_count_after_id = None
+        self._update_changed_count_inline()
 
+    def _update_changed_count_inline(self) -> None:
         if self._changed_mode == "off":
             self.changed_count_var.set("")
             return
@@ -927,16 +1118,21 @@ class App(tk.Tk):
             return
 
         root = Path(root_text).expanduser()
-        if not root.is_dir():
-            self.changed_count_var.set("—")
-            return
-
-        if git_utils.get_repo_root(root) is None:
+        if not root.is_dir() or self._repo_root is None:
             self.changed_count_var.set("не git-репозиторий")
             return
 
         try:
-            changed = git_utils.get_changed_files(root, self._changed_mode)
+            if self._changed_mode == git_utils.MODE_SINCE_COMMIT:
+                changed = git_utils.get_changed_files(
+                    root,
+                    self._changed_mode,
+                    self._changed_commit_hash,
+                )
+            else:
+                changed = git_utils.get_changed_files(
+                    root, self._changed_mode
+                )
         except Exception as exc:
             self.changed_count_var.set(f"ошибка: {exc}")
             return
@@ -956,17 +1152,31 @@ class App(tk.Tk):
             return None, None
 
         try:
-            changed = git_utils.get_changed_files(root, self._changed_mode)
+            if self._changed_mode == git_utils.MODE_SINCE_COMMIT:
+                if not self._changed_commit_hash:
+                    return set(), "git: since_commit (hash не разрешён)"
+                changed = git_utils.get_changed_files(
+                    root,
+                    self._changed_mode,
+                    self._changed_commit_hash,
+                )
+                subject_short = self._changed_commit_subject[:40]
+                label = f"git: с «{subject_short}»"
+            else:
+                changed = git_utils.get_changed_files(
+                    root, self._changed_mode
+                )
+                label = CHANGED_KEY_TO_LABEL.get(
+                    self._changed_mode, self._changed_mode
+                ).lower()
+                label = f"git: {label}"
         except Exception:
-            changed = set()
+            return set(), "git: ошибка"
 
         if changed is None:
             return None, None
 
-        label = CHANGED_KEY_TO_LABEL.get(
-            self._changed_mode, self._changed_mode
-        )
-        return changed, f"git: {label.lower()}"
+        return changed, label
 
     # ---------- Недавние проекты ----------
 
@@ -1327,6 +1537,9 @@ class App(tk.Tk):
         if mode not in CHANGED_KEY_TO_LABEL:
             mode = "off"
         self._changed_mode = mode
+        self._changed_commit_hash = None
+        self._changed_commit_subject = ""
+        self._pending_commit_restore = False
         self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL[mode])
         self._update_changed_warning()
 
@@ -1380,6 +1593,7 @@ class App(tk.Tk):
             "truncate_enabled": self.truncate_var.get(),
             "truncate_max_lines": self.truncate_lines_var.get(),
             "changed_only_mode": self._changed_mode,
+            "changed_commit_subject": self._changed_commit_subject,
             "prompt_attach_enabled": self.prompt_attach_var.get(),
             "recent_projects": list(self.recent_projects),
             "recent_outputs": dict(self.recent_outputs),
