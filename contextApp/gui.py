@@ -33,6 +33,7 @@ CHANGED_MODES_STATIC: tuple[tuple[str, str], ...] = (
 )
 
 CHANGED_KEY_TO_LABEL = {key: label for key, label in CHANGED_MODES_STATIC}
+CHANGED_LABEL_TO_KEY = {label: key for key, label in CHANGED_MODES_STATIC}
 
 # Задержка автосохранения настроек после последнего изменения.
 AUTOSAVE_DELAY_MS = 1500
@@ -949,8 +950,8 @@ class App(tk.Tk):
     def _on_changed_mode_changed(self) -> None:
         label = self.changed_only_display_var.get()
 
-        if label in CHANGED_KEY_TO_LABEL:
-            self._changed_mode = CHANGED_KEY_TO_LABEL[label]
+        if label in CHANGED_LABEL_TO_KEY:
+            self._changed_mode = CHANGED_LABEL_TO_KEY[label]
             self._changed_commit_hash = None
             self._changed_commit_subject = ""
         else:
