@@ -52,10 +52,7 @@ def find_entry(explicit: str | None) -> Path:
         if "__name__" in text and "__main__" in text:
             return candidate
 
-    sys.exit(
-        "[build] main.py не найден. Укажи файл явно: "
-        "python build.py myscript.py"
-    )
+    sys.exit("[build] main.py не найден. Укажи файл явно: python build.py myscript.py")
 
 
 def find_icon() -> Path | None:
@@ -64,6 +61,7 @@ def find_icon() -> Path | None:
         if p.exists():
             return p
     return None
+
 
 def find_python() -> str:
     """
@@ -116,6 +114,7 @@ def _has_pyinstaller(python_exe: Path) -> bool:
     try:
         result = subprocess.run(
             [str(python_exe), "-c", "import PyInstaller"],
+            check=False,
             capture_output=True,
             timeout=15,
         )
@@ -123,23 +122,28 @@ def _has_pyinstaller(python_exe: Path) -> bool:
         return False
     return result.returncode == 0
 
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Универсальная сборка PyInstaller"
+    parser = argparse.ArgumentParser(description="Универсальная сборка PyInstaller")
+    parser.add_argument("entry", nargs="?", help="Входной .py (по умолчанию main.py)")
+    parser.add_argument("--name", help="Имя выходного exe (по умолчанию — имя папки)")
+    parser.add_argument(
+        "--console", action="store_true", help="Оставить консольное окно"
     )
-    parser.add_argument("entry", nargs="?",
-                        help="Входной .py (по умолчанию main.py)")
-    parser.add_argument("--name",
-                        help="Имя выходного exe (по умолчанию — имя папки)")
-    parser.add_argument("--console", action="store_true",
-                        help="Оставить консольное окно")
-    parser.add_argument("--onefile", default="true",
-                        choices=["true", "false"],
-                        help="Собрать одним файлом (true) или папкой (false)")
-    parser.add_argument("--no-clean", action="store_true",
-                        help="Не удалять build/ и dist/ перед сборкой")
-    parser.add_argument("--keep-spec", action="store_true",
-                        help="Оставить сгенерированный .spec")
+    parser.add_argument(
+        "--onefile",
+        default="true",
+        choices=["true", "false"],
+        help="Собрать одним файлом (true) или папкой (false)",
+    )
+    parser.add_argument(
+        "--no-clean",
+        action="store_true",
+        help="Не удалять build/ и dist/ перед сборкой",
+    )
+    parser.add_argument(
+        "--keep-spec", action="store_true", help="Оставить сгенерированный .spec"
+    )
     args = parser.parse_args()
 
     entry = find_entry(args.entry)
@@ -155,10 +159,14 @@ def main() -> int:
     python_exe = find_python()
 
     cmd = [
-        python_exe, "-m", "PyInstaller",
+        python_exe,
+        "-m",
+        "PyInstaller",
         str(entry),
-        "--name", name,
-        "--clean", "--noconfirm",
+        "--name",
+        name,
+        "--clean",
+        "--noconfirm",
     ]
 
     if args.onefile == "true":
@@ -177,7 +185,7 @@ def main() -> int:
     print("  ", " ".join(cmd))
     print()
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         print("\n[build] Сборка не удалась.", file=sys.stderr)
         print(

@@ -10,7 +10,6 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-
 CHECKED = "☑"
 UNCHECKED = "☐"
 FOLDER = "📁"
@@ -44,8 +43,7 @@ class FilePickerDialog(tk.Toplevel):
         self._candidates: list[Path] = [p for p, _ in candidates]
         self._candidate_set: set[Path] = set(self._candidates)
         self._selected: set[Path] = (
-            set(preselected) if preselected is not None
-            else set(self._candidates)
+            set(preselected) if preselected is not None else set(self._candidates)
         )
         self._selected &= self._candidate_set
 
@@ -109,9 +107,7 @@ class FilePickerDialog(tk.Toplevel):
             textvariable=self._search_var,
         ).pack(side="left", fill="x", expand=True, padx=(6, 6))
 
-        self._search_var.trace_add(
-            "write", lambda *_: self._on_search()
-        )
+        self._search_var.trace_add("write", lambda *_: self._on_search())
 
         ttk.Button(
             search_row,
@@ -200,9 +196,7 @@ class FilePickerDialog(tk.Toplevel):
 
             for i in range(1, len(rel.parts) + 1):
                 child = Path(*rel.parts[:i])
-                parent = (
-                    Path(*rel.parts[:i - 1]) if i > 1 else Path(".")
-                )
+                parent = Path(*rel.parts[: i - 1]) if i > 1 else Path(".")
                 bucket = children.setdefault(parent, [])
                 if child not in bucket:
                     bucket.append(child)
@@ -216,7 +210,7 @@ class FilePickerDialog(tk.Toplevel):
                     break
                 ancestor = ancestor.parent
 
-        for parent in children:
+        for parent in children:  # noqa: PLC0206
             children[parent].sort(
                 key=lambda p: (
                     not (self._root / p).is_dir(),
@@ -313,9 +307,7 @@ class FilePickerDialog(tk.Toplevel):
             return
 
         if item in self._dir_items:
-            descendants = [
-                p for p in self._candidates if _is_descendant(p, path)
-            ]
+            descendants = [p for p in self._candidates if _is_descendant(p, path)]
             if not descendants:
                 return
             all_on = all(p in self._selected for p in descendants)

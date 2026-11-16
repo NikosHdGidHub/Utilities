@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
-import prompt_preview
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -12,6 +11,7 @@ from tkinter.scrolledtext import ScrolledText
 import core
 import file_picker
 import git_utils
+import prompt_preview
 
 APP_TITLE = "Project Context Builder"
 
@@ -56,15 +56,11 @@ class App(tk.Tk):
         settings = core.load_settings()
         cats = settings.get("categories") or {}
 
-        self._initial_prompt_attach = bool(
-            settings.get("prompt_attach_enabled", False)
-        )
+        self._initial_prompt_attach = bool(settings.get("prompt_attach_enabled", False))
 
         self.root_var = tk.StringVar()
         self.output_var = tk.StringVar()
-        self.max_var = tk.StringVar(
-            value=str(settings.get("max_mb", "2"))
-        )
+        self.max_var = tk.StringVar(value=str(settings.get("max_mb", "2")))
 
         self.tree_var = tk.BooleanVar(value=bool(cats.get("tree", True)))
         self.code_var = tk.BooleanVar(value=bool(cats.get("code", True)))
@@ -77,12 +73,8 @@ class App(tk.Tk):
         self.output_files_var = tk.BooleanVar(
             value=bool(cats.get("output_files", False))
         )
-        self.empty_var = tk.BooleanVar(
-            value=bool(cats.get("empty", False))
-        )
-        self.env_files_var = tk.BooleanVar(
-            value=bool(cats.get("env_files", False))
-        )
+        self.empty_var = tk.BooleanVar(value=bool(cats.get("empty", False)))
+        self.env_files_var = tk.BooleanVar(value=bool(cats.get("env_files", False)))
 
         self.exclude_var = tk.StringVar(
             value=str(
@@ -119,8 +111,8 @@ class App(tk.Tk):
 
         # Хотим восстановить сохранённый коммит при первом успешном
         # обновлении git-состояния (по совпадению subject).
-        self._pending_commit_restore = (
-            _saved_mode == "since_commit" and bool(_saved_subject)
+        self._pending_commit_restore = _saved_mode == "since_commit" and bool(
+            _saved_subject
         )
 
         if _saved_mode not in CHANGED_KEY_TO_LABEL:
@@ -139,12 +131,8 @@ class App(tk.Tk):
         self.git_info_var = tk.StringVar(value="")
         self._changed_count_after_id: str | None = None
 
-        self.recent_projects: list[str] = list(
-            settings.get("recent_projects") or []
-        )
-        self.recent_outputs: dict[str, str] = dict(
-            settings.get("recent_outputs") or {}
-        )
+        self.recent_projects: list[str] = list(settings.get("recent_projects") or [])
+        self.recent_outputs: dict[str, str] = dict(settings.get("recent_outputs") or {})
 
         # Ручной выбор файлов.
         # None = «все подходящие под фильтры».
@@ -159,9 +147,7 @@ class App(tk.Tk):
         self.stats_var = tk.StringVar(value="Статистика: —")
         self.advanced_summary_var = tk.StringVar(value="")
 
-        self.prompt_attach_var = tk.BooleanVar(
-            value=self._initial_prompt_attach
-        )
+        self.prompt_attach_var = tk.BooleanVar(value=self._initial_prompt_attach)
         self.prompt_status_var = tk.StringVar(value="")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -174,9 +160,7 @@ class App(tk.Tk):
         self.ext_exclude_var.trace_add(
             "write", lambda *_: self._update_advanced_summary()
         )
-        self.exclude_var.trace_add(
-            "write", lambda *_: self._update_advanced_summary()
-        )
+        self.exclude_var.trace_add("write", lambda *_: self._update_advanced_summary())
         self._update_advanced_summary()
         self._refresh_recent_menu()
         self._update_selected_files_var()
@@ -186,6 +170,7 @@ class App(tk.Tk):
         self.changed_only_display_var.trace_add(
             "write", lambda *_: self._on_changed_mode_changed()
         )
+
         def _on_root_changed(*_) -> None:
             # При смене корня выбранный коммит относится к старому репо —
             # сбрасываем. Если ещё ждём восстановление из настроек —
@@ -197,9 +182,7 @@ class App(tk.Tk):
                 self._changed_mode = "off"
                 self._changed_commit_hash = None
                 self._changed_commit_subject = ""
-                self.changed_only_display_var.set(
-                    CHANGED_KEY_TO_LABEL["off"]
-                )
+                self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL["off"])
             self._schedule_git_refresh()
             self._update_prompt_status()
 
@@ -291,8 +274,7 @@ class App(tk.Tk):
         ttk.Label(
             header,
             text=(
-                "Настройте состав контекста и соберите проект "
-                "для ChatGPT в один клик."
+                "Настройте состав контекста и соберите проект для ChatGPT в один клик."
             ),
         ).pack(anchor="w", pady=(2, 10))
 
@@ -352,9 +334,7 @@ class App(tk.Tk):
             ("Стили (.css, .scss, .less, .svg)", self.style_var),
             ("Конфиги (.json, .yaml, .toml, .ini)", self.config_var),
         ]:
-            ttk.Checkbutton(col1, text=text, variable=var).pack(
-                anchor="w", pady=1
-            )
+            ttk.Checkbutton(col1, text=text, variable=var).pack(anchor="w", pady=1)
 
         for text, var in [
             ("Документация (.md, README, LICENSE)", self.doc_var),
@@ -362,18 +342,14 @@ class App(tk.Tk):
             ("Данные (.csv, .tsv, .jsonl)", self.data_var),
             ("Логи (.log)", self.log_var),
         ]:
-            ttk.Checkbutton(col2, text=text, variable=var).pack(
-                anchor="w", pady=1
-            )
+            ttk.Checkbutton(col2, text=text, variable=var).pack(anchor="w", pady=1)
 
         for text, var in [
             ("Lock-файлы (package-lock.json, …)", self.output_files_var),
             ("Пустые файлы", self.empty_var),
             (".env-файлы (секреты!)", self.env_files_var),
         ]:
-            ttk.Checkbutton(col3, text=text, variable=var).pack(
-                anchor="w", pady=1
-            )
+            ttk.Checkbutton(col3, text=text, variable=var).pack(anchor="w", pady=1)
 
         # Пресеты + доп. настройки.
         presets = ttk.Frame(include_group)
@@ -385,9 +361,7 @@ class App(tk.Tk):
             pady=(10, 0),
         )
 
-        ttk.Label(presets, text="Быстрые настройки:").pack(
-            side="left", padx=(0, 6)
-        )
+        ttk.Label(presets, text="Быстрые настройки:").pack(side="left", padx=(0, 6))
 
         ttk.Button(
             presets,
@@ -464,9 +438,7 @@ class App(tk.Tk):
             pady=(10, 0),
         )
 
-        ttk.Label(files_row, text="Точный выбор файлов:").pack(
-            side="left", padx=(0, 8)
-        )
+        ttk.Label(files_row, text="Точный выбор файлов:").pack(side="left", padx=(0, 8))
 
         ttk.Button(
             files_row,
@@ -497,9 +469,7 @@ class App(tk.Tk):
             pady=(10, 0),
         )
 
-        ttk.Label(changed_row, text="Только изменённые:").pack(
-            side="left", padx=(0, 8)
-        )
+        ttk.Label(changed_row, text="Только изменённые:").pack(side="left", padx=(0, 8))
 
         self.changed_combo = ttk.Combobox(
             changed_row,
@@ -530,8 +500,6 @@ class App(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(10, 0))
 
-
-
         # Строка под селектором: предупреждение «git не найден»
         # и/или мелкая информация о найденном репозитории.
         git_row = ttk.Frame(include_group)
@@ -557,7 +525,7 @@ class App(tk.Tk):
             font=("Segoe UI", 8),
         ).pack(side="left", padx=(8, 0))
 
-                # ----- 3. Промпт -----
+        # ----- 3. Промпт -----
         prompt_group = ttk.LabelFrame(
             frame, text="3. Промпт (необязательно)", padding=8
         )
@@ -590,7 +558,6 @@ class App(tk.Tk):
             textvariable=self.prompt_status_var,
             foreground="#666666",
         ).pack(anchor="w", pady=(4, 0))
-
 
         # ----- 4. Результат -----
         result_group = ttk.LabelFrame(frame, text="4. Результат", padding=8)
@@ -707,7 +674,6 @@ class App(tk.Tk):
         for var in watched:
             var.trace_add("write", lambda *_: self._schedule_autosave())
 
-
     def _on_hotkey_build(self, _event=None) -> str:
         self.build()
         return "break"
@@ -743,7 +709,7 @@ class App(tk.Tk):
                 "или «Открыть в редакторе»."
             )
             return
-        
+
         _, stats = core.parse_prompt_file(path)
         if stats.get("error"):
             self.prompt_status_var.set(
@@ -847,7 +813,7 @@ class App(tk.Tk):
             else:
                 subprocess.run(["xdg-open", str(path)], check=False)
             return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             messagebox.showerror(
                 APP_TITLE,
                 f"Не удалось открыть файл:\n\n{exc}",
@@ -857,9 +823,7 @@ class App(tk.Tk):
     def _schedule_autosave(self) -> None:
         if self._autosave_after_id is not None:
             self.after_cancel(self._autosave_after_id)
-        self._autosave_after_id = self.after(
-            AUTOSAVE_DELAY_MS, self._do_autosave
-        )
+        self._autosave_after_id = self.after(AUTOSAVE_DELAY_MS, self._do_autosave)
 
     def _do_autosave(self) -> None:
         self._autosave_after_id = None
@@ -871,9 +835,7 @@ class App(tk.Tk):
         if self.selected_files is None:
             self.selected_files_var.set("все подходящие")
         else:
-            self.selected_files_var.set(
-                f"выбрано вручную: {len(self.selected_files)}"
-            )
+            self.selected_files_var.set(f"выбрано вручную: {len(self.selected_files)}")
 
     def _current_whitelist(self, root: Path) -> set[Path] | None:
         """Возвращает whitelist, только если он относится к этому root."""
@@ -956,9 +918,7 @@ class App(tk.Tk):
         self._selected_files_root = str(root)
         self._update_selected_files_var()
 
-        self.log_msg(
-            f"Ручной выбор: {len(result)} из {len(candidates)} файлов."
-        )
+        self.log_msg(f"Ручной выбор: {len(result)} из {len(candidates)} файлов.")
 
     # ---------- Фильтр «только изменённые» ----------
 
@@ -982,9 +942,7 @@ class App(tk.Tk):
                 self._changed_mode = "off"
                 self._changed_commit_hash = None
                 self._changed_commit_subject = ""
-                self.changed_only_display_var.set(
-                    CHANGED_KEY_TO_LABEL["off"]
-                )
+                self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL["off"])
 
         self._update_changed_warning()
         self._schedule_changed_count_update()
@@ -1007,9 +965,7 @@ class App(tk.Tk):
     def _schedule_git_refresh(self) -> None:
         if self._git_refresh_after_id is not None:
             self.after_cancel(self._git_refresh_after_id)
-        self._git_refresh_after_id = self.after(
-            400, self._refresh_git_state
-        )
+        self._git_refresh_after_id = self.after(400, self._refresh_git_state)
 
     def _refresh_git_state(self) -> None:
         self._git_refresh_after_id = None
@@ -1050,27 +1006,19 @@ class App(tk.Tk):
 
         static_labels = [label for _, label in CHANGED_MODES_STATIC]
         commit_labels = [c["label"] for c in commits]
-        self.changed_combo.configure(
-            values=static_labels + commit_labels
-        )
+        self.changed_combo.configure(values=static_labels + commit_labels)
 
         if reason == "no_git":
             self.changed_combo.configure(state="disabled")
             self.git_info_var.set("")
-            self.git_warn_var.set(
-                "⚠  Git не найден в выбранном каталоге!"
-            )
+            self.git_warn_var.set("⚠  Git не найден в выбранном каталоге!")
 
             if self._changed_mode != "off":
                 self._changed_mode = "off"
                 self._changed_commit_hash = None
                 self._changed_commit_subject = ""
-                self.changed_only_display_var.set(
-                    CHANGED_KEY_TO_LABEL["off"]
-                )
-                self.log_msg(
-                    "Git не найден — режим «Только изменённые» выключен."
-                )
+                self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL["off"])
+                self.log_msg("Git не найден — режим «Только изменённые» выключен.")
 
         else:
             self.changed_combo.configure(state="readonly")
@@ -1082,9 +1030,7 @@ class App(tk.Tk):
                     and repo_root.resolve() != project_root.resolve()
                 )
                 if show_parent_hint:
-                    self.git_info_var.set(
-                        f"Git: {repo_str}  (родительский каталог)"
-                    )
+                    self.git_info_var.set(f"Git: {repo_str}  (родительский каталог)")
                 else:
                     self.git_info_var.set(f"Git: {repo_str}")
             else:
@@ -1111,9 +1057,7 @@ class App(tk.Tk):
                 self._changed_mode = "off"
                 self._changed_commit_hash = None
                 self._changed_commit_subject = ""
-                self.changed_only_display_var.set(
-                    CHANGED_KEY_TO_LABEL["off"]
-                )
+                self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL["off"])
 
         # Периодическое обновление (фокус / кнопка ↻):
         # метка содержит относительное время («2 ч назад»), которое
@@ -1126,8 +1070,7 @@ class App(tk.Tk):
             and self._changed_commit_hash
         ):
             matched = next(
-                (c for c in commits
-                 if c["hash"] == self._changed_commit_hash),
+                (c for c in commits if c["hash"] == self._changed_commit_hash),
                 None,
             )
             if matched is not None:
@@ -1141,9 +1084,7 @@ class App(tk.Tk):
                 self._changed_mode = "off"
                 self._changed_commit_hash = None
                 self._changed_commit_subject = ""
-                self.changed_only_display_var.set(
-                    CHANGED_KEY_TO_LABEL["off"]
-                )
+                self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL["off"])
 
         self._update_changed_warning()
         self._update_changed_count_inline()
@@ -1152,16 +1093,12 @@ class App(tk.Tk):
         if self._changed_mode == "off":
             self.changed_warning_var.set("")
         else:
-            self.changed_warning_var.set(
-                "⚠  Внимание — в сборку попадут не все файлы!"
-            )
+            self.changed_warning_var.set("⚠  Внимание — в сборку попадут не все файлы!")
 
     def _schedule_changed_count_update(self) -> None:
         if self._changed_count_after_id is not None:
             self.after_cancel(self._changed_count_after_id)
-        self._changed_count_after_id = self.after(
-            400, self._update_changed_count
-        )
+        self._changed_count_after_id = self.after(400, self._update_changed_count)
 
     def _update_changed_count(self) -> None:
         self._changed_count_after_id = None
@@ -1190,10 +1127,8 @@ class App(tk.Tk):
                     self._changed_commit_hash,
                 )
             else:
-                changed = git_utils.get_changed_files(
-                    root, self._changed_mode
-                )
-        except Exception as exc:
+                changed = git_utils.get_changed_files(root, self._changed_mode)
+        except Exception as exc:  # noqa: BLE001
             self.changed_count_var.set(f"ошибка: {exc}")
             return
 
@@ -1223,14 +1158,12 @@ class App(tk.Tk):
                 subject_short = self._changed_commit_subject[:40]
                 label = f"git: с «{subject_short}»"
             else:
-                changed = git_utils.get_changed_files(
-                    root, self._changed_mode
-                )
+                changed = git_utils.get_changed_files(root, self._changed_mode)
                 label = CHANGED_KEY_TO_LABEL.get(
                     self._changed_mode, self._changed_mode
                 ).lower()
                 label = f"git: {label}"
-        except Exception:
+        except Exception:  # noqa: BLE001
             return set(), "git: ошибка"
 
         if changed is None:
@@ -1271,13 +1204,9 @@ class App(tk.Tk):
             return
 
         # Убираем дубликат и добавляем в начало.
-        self.recent_projects = [
-            p for p in self.recent_projects if p != path
-        ]
+        self.recent_projects = [p for p in self.recent_projects if p != path]
         self.recent_projects.insert(0, path)
-        self.recent_projects = self.recent_projects[
-            : core.MAX_RECENT_PROJECTS
-        ]
+        self.recent_projects = self.recent_projects[: core.MAX_RECENT_PROJECTS]
 
         # Убираем карту путей для проектов, которых больше нет в списке.
         keep = set(self.recent_projects)
@@ -1583,15 +1512,9 @@ class App(tk.Tk):
         self.max_var.set(str(defaults.get("max_mb", "2")))
         self.exclude_var.set(str(defaults.get("excluded_dirs", "")))
         self.ext_filter_var.set(str(defaults.get("extension_filter", "")))
-        self.ext_exclude_var.set(
-            bool(defaults.get("extension_exclude", False))
-        )
-        self.truncate_var.set(
-            bool(defaults.get("truncate_enabled", False))
-        )
-        self.truncate_lines_var.set(
-            str(defaults.get("truncate_max_lines", "1000"))
-        )
+        self.ext_exclude_var.set(bool(defaults.get("extension_exclude", False)))
+        self.truncate_var.set(bool(defaults.get("truncate_enabled", False)))
+        self.truncate_lines_var.set(str(defaults.get("truncate_max_lines", "1000")))
 
         mode = str(defaults.get("changed_only_mode", "off"))
         if mode not in CHANGED_KEY_TO_LABEL:
@@ -1603,9 +1526,7 @@ class App(tk.Tk):
         self.changed_only_display_var.set(CHANGED_KEY_TO_LABEL[mode])
         self._update_changed_warning()
 
-        self.prompt_attach_var.set(
-            bool(defaults.get("prompt_attach_enabled", False))
-        )
+        self.prompt_attach_var.set(bool(defaults.get("prompt_attach_enabled", False)))
         self._update_prompt_status()
 
         self.selected_files = None
@@ -1658,7 +1579,6 @@ class App(tk.Tk):
             "recent_projects": list(self.recent_projects),
             "recent_outputs": dict(self.recent_outputs),
         }
-        
 
     def _save_settings(self) -> None:
         try:
@@ -1667,7 +1587,7 @@ class App(tk.Tk):
 
             if not ok and error:
                 print(f"[settings] не удалось сохранить: {error}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(f"[settings] исключение при сохранении: {exc}")
 
     def _on_close(self) -> None:
@@ -1728,9 +1648,10 @@ class App(tk.Tk):
         try:
             if platform.system() == "Windows":
                 import winsound
+
                 winsound.MessageBeep(winsound.MB_OK)
-        except Exception:
-            pass     
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     def add_ext(self, ext: str) -> None:
         current = self.ext_filter_var.get().strip()
@@ -1743,9 +1664,7 @@ class App(tk.Tk):
         self.ext_filter_var.set(new_value)
 
     def choose_root(self) -> None:
-        selected = filedialog.askdirectory(
-            title="Выберите корневой каталог проекта"
-        )
+        selected = filedialog.askdirectory(title="Выберите корневой каталог проекта")
 
         if not selected:
             return
@@ -1776,9 +1695,7 @@ class App(tk.Tk):
             title="Сохранить контекст проекта",
             initialdir=str(root if root.exists() else Path.home()),
             initialfile=(
-                f"{root.name}_context.txt"
-                if root.name
-                else "project_context.txt"
+                f"{root.name}_context.txt" if root.name else "project_context.txt"
             ),
             defaultextension=".txt",
             filetypes=[
@@ -1804,22 +1721,16 @@ class App(tk.Tk):
         try:
             max_mb = float(self.max_var.get().replace(",", "."))
         except ValueError as exc:
-            raise ValueError(
-                "Максимальный размер файла должен быть числом."
-            ) from exc
+            raise ValueError("Максимальный размер файла должен быть числом.") from exc
 
         if max_mb <= 0:
-            raise ValueError(
-                "Максимальный размер должен быть больше 0."
-            )
+            raise ValueError("Максимальный размер должен быть больше 0.")
 
         return root, max_mb
 
     def _get_truncate_max_lines(self) -> int:
         try:
-            value = int(
-                float(self.truncate_lines_var.get().replace(",", "."))
-            )
+            value = int(float(self.truncate_lines_var.get().replace(",", ".")))
         except (ValueError, AttributeError):
             return 1000
 
@@ -1879,21 +1790,15 @@ class App(tk.Tk):
 
         if ext_filter:
             mode = "исключение" if ext_exclude else "включение"
-            self.log_msg(
-                f"Фильтр расширений ({mode}): "
-                f"{', '.join(sorted(ext_filter))}"
-            )
+            self.log_msg(f"Фильтр расширений ({mode}): {', '.join(sorted(ext_filter))}")
 
         if include_env:
             self.log_msg(
-                "ВНИМАНИЕ: включена обработка .env-файлов "
-                "(могут содержать секреты)."
+                "ВНИМАНИЕ: включена обработка .env-файлов (могут содержать секреты)."
             )
 
         if truncate_on:
-            self.log_msg(
-                f"Обрезка длинных файлов: до {truncate_lines} строк."
-            )
+            self.log_msg(f"Обрезка длинных файлов: до {truncate_lines} строк.")
 
         whitelist = self._current_whitelist(root)
         if whitelist is not None:
@@ -1902,25 +1807,21 @@ class App(tk.Tk):
         changed_files, changed_label = self._get_changed_files_for_build(root)
         if changed_files is not None:
             self.log_msg(
-                f"Только изменённые ({changed_label}): "
-                f"{len(changed_files)} файл(ов)."
+                f"Только изменённые ({changed_label}): {len(changed_files)} файл(ов)."
             )
 
         self.log_msg(f"Корень: {root}")
         self.status_var.set("Сканирование проекта…")
 
         if not self.output_var.get().strip():
-            self.output_var.set(
-                str(root / f"{root.name}_context.txt")
-            )
+            self.output_var.set(str(root / f"{root.name}_context.txt"))
 
         output_path = Path(self.output_var.get()).expanduser()
 
         user_prompt = self._compose_user_prompt(root)
         if user_prompt:
             self.log_msg(
-                f"Промпт: {len(user_prompt)} символов — "
-                "будет вставлен в начало."
+                f"Промпт: {len(user_prompt)} символов — будет вставлен в начало."
             )
 
         try:
@@ -1942,7 +1843,7 @@ class App(tk.Tk):
                 changed_only_label=changed_label,
                 user_prompt=user_prompt,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.status_var.set("Ошибка.")
             messagebox.showerror(
                 APP_TITLE,
@@ -1956,11 +1857,7 @@ class App(tk.Tk):
             return False
 
         tokens_str = core.format_tokens(stats["tokens"])
-        warning = (
-            " ⚠️"
-            if stats["tokens"] > core.TOKEN_WARNING_THRESHOLD
-            else ""
-        )
+        warning = " ⚠️" if stats["tokens"] > core.TOKEN_WARNING_THRESHOLD else ""
 
         self.stats_var.set(
             "Статистика: "
@@ -1978,8 +1875,7 @@ class App(tk.Tk):
             f"пропущено: {len(stats['skipped'])}"
         )
         self.log_msg(
-            f"~{tokens_str} токенов (оценка), "
-            f"{core.format_size(stats['size'])}"
+            f"~{tokens_str} токенов (оценка), {core.format_size(stats['size'])}"
         )
         self.log_msg(f"Сохранено: {output_path}")
 
@@ -2018,8 +1914,7 @@ class App(tk.Tk):
                 APP_TITLE,
                 f"Ошибка буфера обмена:\n\n{exc}",
             )
-    
-    
+
     def open_output_file(self) -> None:
         """Собирает контекст и сразу открывает TXT."""
         if not self._build_context():
@@ -2068,7 +1963,7 @@ class App(tk.Tk):
             else:
                 subprocess.run(["xdg-open", str(folder)], check=False)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             messagebox.showerror(
                 APP_TITLE,
                 f"Не удалось открыть папку:\n\n{exc}",

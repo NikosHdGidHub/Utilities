@@ -11,7 +11,6 @@ import subprocess
 import time
 from pathlib import Path
 
-
 MODE_OFF = "off"
 MODE_UNCOMMITTED = "uncommitted"
 MODE_SINCE_COMMIT = "since_commit"
@@ -25,13 +24,16 @@ def _run_git(
     timeout: int = 15,
 ) -> tuple[bool, str]:
     try:
-        result = subprocess.run(
+        result: subprocess.CompletedProcess[str] = subprocess.run(
             [
                 "git",
-                "-C", str(root),
-                "-c", "core.quotepath=false",
+                "-C",
+                str(root),
+                "-c",
+                "core.quotepath=false",
                 *args,
             ],
+            check=False,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -72,13 +74,16 @@ def _resolve_files(repo_root: Path, rel_paths: list[str]) -> set[Path]:
 
 
 def _files_uncommitted(root: Path, repo_root: Path) -> set[Path]:
-    ok, output = _run_git(root, [
-        "status",
-        "--porcelain",
-        "-z",
-        "--untracked-files=all",
-        "--no-renames",
-    ])
+    ok, output = _run_git(
+        root,
+        [
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+    )
     if not ok:
         return set()
 
@@ -100,19 +105,30 @@ def _files_since_commit(
     commit_hash: str,
 ) -> set[Path]:
     """Файлы, изменённые между <commit>^ и HEAD (включая сам коммит)."""
-    ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames",
-        f"{commit_hash}^..HEAD",
-    ])
+    ok, output = _run_git(
+        root,
+        [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            f"{commit_hash}^..HEAD",
+        ],
+    )
     if ok:
         return _resolve_files(repo_root, output.splitlines())
 
     # Первый коммит в репозитории — родителя нет, берём пустое дерево.
     empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-    ok, output = _run_git(root, [
-        "diff", "--name-only", "--no-renames",
-        empty_tree, "HEAD",
-    ])
+    ok, output = _run_git(
+        root,
+        [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            empty_tree,
+            "HEAD",
+        ],
+    )
     if ok:
         return _resolve_files(repo_root, output.splitlines())
 
@@ -145,18 +161,18 @@ def get_changed_files(
 
 # ---------- Список последних коммитов для выпадающего списка ----------
 
+
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    return text[:max_len - 1] + "…"
+    return text[: max_len - 1] + "…"
 
 
 def _relative_time(timestamp: int) -> str:
     if timestamp <= 0:
         return "?"
     diff = int(time.time()) - timestamp
-    if diff < 0:
-        diff = 0
+    diff = max(diff, 0)
     if diff < 60:
         return "только что"
     if diff < 3600:
@@ -176,11 +192,14 @@ def get_recent_commits(root: Path, limit: int = 15) -> list[dict]:
     Каждый элемент: {hash, short_hash, subject, timestamp, label}.
     label = "<subject[:48]> · <относительное время>".
     """
-    ok, output = _run_git(root, [
-        "log",
-        f"-n{limit}",
-        "--pretty=format:%H%x00%h%x00%s%x00%ct",
-    ])
+    ok, output = _run_git(
+        root,
+        [
+            "log",
+            f"-n{limit}",
+            "--pretty=format:%H%x00%h%x00%s%x00%ct",
+        ],
+    )
     if not ok:
         return []
 
@@ -194,11 +213,13 @@ def get_recent_commits(root: Path, limit: int = 15) -> list[dict]:
             timestamp = int(ct_str)
         except ValueError:
             timestamp = 0
-        commits.append({
-            "hash": full_hash,
-            "short_hash": short_hash,
-            "subject": subject,
-            "timestamp": timestamp,
-            "label": f"{_truncate(subject, 48)} · {_relative_time(timestamp)}",
-        })
+        commits.append(
+            {
+                "hash": full_hash,
+                "short_hash": short_hash,
+                "subject": subject,
+                "timestamp": timestamp,
+                "label": f"{_truncate(subject, 48)} · {_relative_time(timestamp)}",
+            }
+        )
     return commits

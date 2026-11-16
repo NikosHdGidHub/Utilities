@@ -9,13 +9,12 @@
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Callable
 
 import core
-
 
 # Интервал опроса mtime файла (мс).
 POLL_INTERVAL_MS = 1500
