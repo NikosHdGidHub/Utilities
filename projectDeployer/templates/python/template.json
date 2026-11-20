@@ -1,0 +1,10 @@
+{
+  "name": "Python",
+  "description": "Приложение командной строки, тест unittest, виртуальное окружение и Git. Работает на Python 3.11+.",
+  "commands": [
+    {"label": "Создание виртуального окружения", "args": ["python", "-m", "venv", ".venv"]}
+  ],
+  "post_commands": [
+    {"label": "Инициализация Git · main", "args": ["git", "init", "--initial-branch=main"]}
+  ]
+}

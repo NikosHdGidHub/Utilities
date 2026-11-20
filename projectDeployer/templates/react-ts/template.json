@@ -1,0 +1,12 @@
+{
+  "name": "React + Vite + TypeScript",
+  "description": "Официальный шаблон Vite, npm-зависимости и Git. Рекомендуется Node.js 24 LTS.",
+  "commands": [
+    {"label": "Создание React-проекта", "args": ["npm", "exec", "--yes", "--package=create-vite@9.3.4", "--", "create-vite", ".", "--template", "react-ts", "--no-interactive", "--no-immediate"]},
+    {"label": "Настройка имени npm-пакета", "args": ["npm", "pkg", "set", "name={{package_name}}"]},
+    {"label": "Установка npm-зависимостей", "args": ["npm", "install", "--no-fund"]}
+  ],
+  "post_commands": [
+    {"label": "Инициализация Git · main", "args": ["git", "init", "--initial-branch=main"]}
+  ]
+}
