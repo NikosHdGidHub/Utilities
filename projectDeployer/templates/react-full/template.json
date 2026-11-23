@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "id": "react-full",
+  "name": "React Full",
+  "description": "React, Vite, TypeScript, Tailwind CSS, React Router.",
+  "extends": "react-ts",
+  "features": [
+    "tailwind",
+    "router"
+  ]
+}

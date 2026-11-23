@@ -1,12 +1,53 @@
 {
-  "name": "React + Vite + TypeScript",
-  "description": "Официальный шаблон Vite, npm-зависимости и Git. Рекомендуется Node.js 24 LTS.",
-  "commands": [
-    {"label": "Создание React-проекта", "args": ["npm", "exec", "--yes", "--package=create-vite@9.3.4", "--", "create-vite", ".", "--template", "react-ts", "--no-interactive", "--no-immediate"]},
-    {"label": "Настройка имени npm-пакета", "args": ["npm", "pkg", "set", "name={{package_name}}"]},
-    {"label": "Установка npm-зависимостей", "args": ["npm", "install", "--no-fund"]}
-  ],
-  "post_commands": [
-    {"label": "Инициализация Git · main", "args": ["git", "init", "--initial-branch=main"]}
+  "version": 1,
+  "id": "react-ts",
+  "name": "React Basic",
+  "description": "React, TypeScript и Vite. Компоненты и адаптивные стили на CSS.",
+  "stages": {
+    "Scaffold": [
+      {
+        "label": "Создание React + TypeScript",
+        "args": [
+          "npm",
+          "exec",
+          "--yes",
+          "--engine-strict",
+          "--package=create-vite@9",
+          "--",
+          "create-vite",
+          ".",
+          "--template",
+          "react-ts",
+          "--no-interactive",
+          "--no-immediate"
+        ]
+      },
+      {
+        "label": "Имя пакета",
+        "args": [
+          "npm",
+          "pkg",
+          "set",
+          "name={{package_name}}"
+        ]
+      }
+    ],
+    "Dependencies": [
+      {
+        "label": "Установка зависимостей",
+        "args": [
+          "npm",
+          "install",
+          "--engine-strict",
+          "--strict-peer-deps",
+          "--no-fund"
+        ]
+      }
+    ]
+  },
+  "remove": [
+    "src/App.css",
+    "src/assets",
+    "public"
   ]
 }

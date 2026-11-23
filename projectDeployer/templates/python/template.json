@@ -1,10 +1,52 @@
 {
-  "name": "Python",
-  "description": "Приложение командной строки, тест unittest, виртуальное окружение и Git. Работает на Python 3.11+.",
-  "commands": [
-    {"label": "Создание виртуального окружения", "args": ["python", "-m", "venv", ".venv"]}
-  ],
-  "post_commands": [
-    {"label": "Инициализация Git · main", "args": ["git", "init", "--initial-branch=main"]}
-  ]
+  "version": 1,
+  "id": "python",
+  "name": "Python Basic",
+  "description": "Консольное приложение Python 3.11+, pip и виртуальное окружение.",
+  "stages": {
+    "Prepare": [
+      {
+        "label": "Проверка Python 3.11+",
+        "args": [
+          "python",
+          "-c",
+          "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 'Требуется Python 3.11+')"
+        ]
+      }
+    ],
+    "Scaffold": [
+      {
+        "label": "Создание виртуального окружения",
+        "args": [
+          "python",
+          "-m",
+          "venv",
+          ".venv"
+        ]
+      }
+    ],
+    "Finalize": [
+      {
+        "label": "Установка зависимостей внутри .venv",
+        "args": [
+          "./.venv/bin/python",
+          "-m",
+          "pip",
+          "--disable-pip-version-check",
+          "install",
+          "-r",
+          "requirements.txt"
+        ],
+        "args_windows": [
+          "./.venv/Scripts/python.exe",
+          "-m",
+          "pip",
+          "--disable-pip-version-check",
+          "install",
+          "-r",
+          "requirements.txt"
+        ]
+      }
+    ]
+  }
 }

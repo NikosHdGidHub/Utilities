@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "react-tailwind",
+  "name": "React Tailwind",
+  "description": "React, Vite, TypeScript, Tailwind CSS.",
+  "extends": "react-ts",
+  "features": [
+    "tailwind"
+  ]
+}

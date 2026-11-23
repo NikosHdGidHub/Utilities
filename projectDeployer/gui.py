@@ -7,9 +7,12 @@ import re
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, font, messagebox, ttk
+from tkinter import filedialog, font, messagebox, simpledialog, ttk
 
+import config
+from github import Publication, valid_name
 from deployer import (
+    PartialProject,
     BUNDLED_TEMPLATES,
     DeploymentError,
     Preset,
@@ -38,7 +41,7 @@ class App(tk.Tk):
         self.minsize(790, 630)
         self.configure(background=BACKGROUND)
         self.protocol("WM_DELETE_WINDOW", self.close)
-        self.events: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.busy = False
         self.automatic_folder = True
         self.syncing_folder = False
@@ -54,6 +57,10 @@ class App(tk.Tk):
             load_presets(BUNDLED_TEMPLATES, user_templates())
             if presets is None else (presets, [])
         )
+        try:
+            self.parent.set(config.default_directory())
+        except (OSError, ValueError) as exc:
+            errors.append(f"settings.json: {exc}")
         self.configure_styles()
         self.build_interface()
         self.name.trace_add("write", self.name_changed)
@@ -66,7 +73,7 @@ class App(tk.Tk):
             self.status.set("Нет доступных шаблонов")
             self.create_button.state(["disabled"])
         if errors:
-            self.append_log("Не удалось загрузить шаблоны:\n" + "\n".join(errors))
+            self.append_log("Предупреждения при загрузке:\n" + "\n".join(errors))
             self.tabs.select(self.log_tab)
 
     def configure_styles(self) -> None:
@@ -140,6 +147,11 @@ class App(tk.Tk):
             sidebar, textvariable=self.preset_description, style="Hint.TLabel", wraplength=205,
             justify="left",
         ).pack(anchor="w", pady=(14, 0))
+
+        for label, action in (("Обновить шаблоны", self.refresh), ("Каталог по умолчанию…", self.set_default)):
+            button = ttk.Button(sidebar, text=label, command=action)
+            button.pack(fill="x", pady=(10, 0))
+            self.controls.append(button)
 
         panel = ttk.Frame(body, style="Panel.TFrame", padding=18)
         panel.grid(row=0, column=1, sticky="nsew")
@@ -235,6 +247,90 @@ class App(tk.Tk):
         if selected:
             self.parent.set(selected)
 
+    def refresh(self):
+        if self.busy:
+            return
+        selection = self.selected_preset()
+        presets, errors = load_presets(BUNDLED_TEMPLATES, user_templates())
+        if errors:
+            self.append_log("\n".join(errors))
+            self.tabs.select(self.log_tab)
+            self.status.set("Ошибка обновления шаблонов")
+            return
+        self.presets = presets
+        self.preset_list.delete(0, "end")
+        for preset in presets:
+            self.preset_list.insert("end", preset.name)
+        if presets:
+            index = next((i for i, p in enumerate(presets) if selection and p.id == selection.id), 0)
+            self.preset_list.selection_set(index)
+            self.show_preset()
+            self.create_button.state(["!disabled"])
+            self.status.set("Шаблоны обновлены")
+        else:
+            self.create_button.state(["disabled"])
+            self.preset_description.set("")
+            self.cheatsheet.configure(state="normal")
+            self.cheatsheet.delete("1.0", "end")
+            self.cheatsheet.configure(state="disabled")
+            self.status.set("Нет доступных шаблонов")
+
+    def set_default(self):
+        selected = filedialog.askdirectory(parent=self, initialdir=self.parent.get(), mustexist=True)
+        if selected:
+            try:
+                config.save_default(selected)
+            except OSError as exc:
+                messagebox.showerror("Настройки", str(exc), parent=self)
+            else:
+                self.parent.set(selected)
+
+    def deployment_options(self, values):
+        if not messagebox.askyesno("Создать проект?", str(Path(values[2]) / values[1]), parent=self):
+            return False
+        if not messagebox.askyesno("GitHub", "Создать репозиторий на GitHub?", default="no", parent=self):
+            return None
+        name = simpledialog.askstring("GitHub", "Название репозитория", initialvalue=values[1], parent=self)
+        if name is None:
+            return False
+        if not valid_name(name):
+            messagebox.showerror("GitHub", "Используйте буквы A–Z, цифры, точку, дефис или подчёркивание.", parent=self)
+            return False
+        public = messagebox.askyesnocancel("Видимость", "Сделать репозиторий публичным? Нет — Private.",
+                                           default="no", parent=self)
+        if public is None or not messagebox.askyesno("Публикация", f"Создать {name} ({'Public' if public else 'Private'})?",
+                                                      default="no", parent=self):
+            return False
+        return Publication(name, public)
+
+    def decide_error(self, message, required):
+        self.tabs.select(self.log_tab)
+        dialog = tk.Toplevel(self)
+        dialog.title("Ошибка операции")
+        dialog.transient(self)
+        answer = ["stop"]
+        def choose(value):
+            answer[0] = value
+            dialog.destroy()
+        ttk.Label(dialog, text=message, wraplength=520, padding=12).pack()
+        buttons = [("Повторить", "retry"), ("Завершить", "stop")]
+        if not required:
+            buttons.append(("Пропустить", "skip"))
+        for label, value in buttons:
+            ttk.Button(dialog, text=label, command=lambda v=value: choose(v)).pack(fill="x")
+        def show_log():
+            viewer = tk.Toplevel(dialog)
+            viewer.title("Журнал")
+            box = tk.Text(viewer, wrap="word", width=90, height=24)
+            box.pack(fill="both", expand=True)
+            box.insert("end", self.log.get("1.0", "end"))
+            box.configure(state="disabled")
+            box.see("end")
+            ttk.Button(viewer, text="Вернуться", command=viewer.destroy).pack()
+        ttk.Button(dialog, text="Посмотреть журнал", command=show_log).pack(fill="x")
+        self.wait_window(dialog)
+        return answer[0]
+
     def append_log(self, text: str, *, clear: bool = False) -> None:
         self.log.configure(state="normal")
         if clear:
@@ -261,22 +357,33 @@ class App(tk.Tk):
         if self.busy or preset is None:
             return
         values = self.name.get(), self.folder.get(), self.parent.get()
+        publication = self.deployment_options(values)
+        if publication is False:
+            return
         self.append_log("", clear=True)
         self.tabs.select(self.log_tab)
         self.status.set("Создаю проект…")
         self.set_busy(True)
-        threading.Thread(target=self.deploy_in_background, args=(preset, values), daemon=True).start()
+        threading.Thread(target=self.deploy_in_background, args=(preset, values, publication), daemon=True).start()
         self.after(35, self.receive_events)
 
-    def deploy_in_background(self, preset: Preset, values: tuple[str, str, str]) -> None:
+    def deploy_in_background(self, preset: Preset, values: tuple[str, str, str], publication=None) -> None:
+        def decide(message, required):
+            response = queue.Queue(maxsize=1)
+            self.events.put(("question", (message, required, response)))
+            return response.get()
+        warnings = []
         try:
-            destination = deploy(preset, *values, lambda line: self.events.put(("log", line)))
+            destination = deploy(preset, *values, lambda line: self.events.put(("log", line)),
+                                 decide=decide, publication=publication, warn=warnings.append)
+        except PartialProject as exc:
+            self.events.put(("partial", exc))
         except DeploymentError as exc:
             self.events.put(("error", str(exc)))
         except Exception as exc:
             self.events.put(("error", f"Ошибка создания проекта: {exc}"))
         else:
-            self.events.put(("done", str(destination)))
+            self.events.put(("warning" if warnings else "done", str(destination)))
 
     def receive_events(self) -> None:
         for _ in range(100):
@@ -287,7 +394,28 @@ class App(tk.Tk):
             if kind == "log":
                 self.append_log(text)
                 continue
+            if kind == "question":
+                message, required, response = text
+                response.put(self.decide_error(message, required))
+                continue
+            if kind == "partial":
+                self.append_log(str(text))
+                if messagebox.askyesno("Частичный проект", f"{text}\nУдалить частично созданный проект? "
+                                       "Выберите Нет, чтобы сохранить.", default="no", parent=self):
+                    if messagebox.askyesno("Подтвердите удаление", str(text.path), default="no", parent=self):
+                        try:
+                            text.discard()
+                            self.append_log("Частичный проект удалён")
+                        except (OSError, DeploymentError) as exc:
+                            self.append_log(str(exc))
+                self.status.set("Развёртывание не завершено")
+                self.set_busy(False)
+                return
             self.set_busy(False)
+            if kind == "warning":
+                self.status.set("Создан с предупреждениями")
+                self.append_log(f"Проект сохранён: {text}")
+                return
             if kind == "done":
                 self.append_log(f"Готово. Проект создан: {text}")
                 self.status.set("Проект создан · команды в CHEATSHEET.md")

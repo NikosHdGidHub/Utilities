@@ -1,9 +1,6 @@
-def greeting() -> str:
-    return "Привет! Проект готов."
-
-
 def main() -> None:
-    print(greeting())
+    name = {{project_name_json}}
+    print(f"Проект {name} готов к работе!")
 
 
 if __name__ == "__main__":

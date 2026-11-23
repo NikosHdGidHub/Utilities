@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "router",
+  "name": "Router",
+  "description": "Маршруты Home и About.",
+  "component": true,
+  "stages": {
+    "Dependencies": [
+      {
+        "label": "Установка React Router",
+        "args": [
+          "npm",
+          "install",
+          "--engine-strict",
+          "--strict-peer-deps",
+          "--no-fund",
+          "react-router-dom@7"
+        ]
+      }
+    ]
+  }
+}

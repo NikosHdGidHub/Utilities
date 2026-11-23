@@ -23,8 +23,17 @@
 
 - `git status` — посмотреть изменения.
 - `git diff` — посмотреть правки перед добавлением.
-- `git add .` и `git commit -m "Initial commit"` — создать первый коммит в main.
+- `git add .` и `git commit -m "Описание изменения"` — сохранить изменения.
 - `git switch -c feature/my-change` — создать рабочую ветку после первого коммита.
 - `git switch main` — вернуться в main.
 - `git log --oneline` — посмотреть историю.
 - `git remote add origin URL` и `git push -u origin main` — отправить main в созданный удалённый репозиторий.
+
+Вызов `useEffect(() => { document.title = title }, [title])` синхронизирует заголовок вкладки со свойством компонента.
+
+## GitHub CLI
+
+`gh auth status` показывает текущую авторизацию. Для входа выполните `gh auth login`.
+`gh repo view --web` открывает опубликованный репозиторий. Для первой публикации
+из каталога с коммитом используйте `gh repo create ИМЯ --private --source=. --remote=origin --push`.
+Если Git просит указать автора, задайте `git config user.name "Имя"` и `git config user.email "Почта"`.

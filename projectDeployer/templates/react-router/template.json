@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "react-router",
+  "name": "React Router",
+  "description": "React, Vite, TypeScript, React Router.",
+  "extends": "react-ts",
+  "features": [
+    "router"
+  ]
+}

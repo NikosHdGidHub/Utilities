@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from git_fixture import test_git_identity
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -26,6 +27,7 @@ def run(project, *args):
 
 class DeploymentTests(unittest.TestCase):
     def setUp(self):
+        test_git_identity(self)
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.parent = Path(temporary.name)
@@ -95,9 +97,8 @@ class DeploymentTests(unittest.TestCase):
 
     def test_missing_program_fails_before_creation(self):
         preset = Preset.load(self.make_preset([{"label": "tool", "args": ["absent-tool"]}]))
-        with patch("deployer.shutil.which", return_value=None):
-            with self.assertRaisesRegex(DeploymentError, "absent-tool"):
-                deploy(preset, "Demo", "demo", str(self.parent), self.log.append)
+        with self.assertRaisesRegex(DeploymentError, "absent-tool"):
+            deploy(preset, "Demo", "demo", str(self.parent), self.log.append)
         self.assertFalse((self.parent / "demo").exists())
 
     def test_failed_command_keeps_partial_project_and_stops(self):
@@ -112,21 +113,24 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("› skip", self.log)
         self.assertFalse((self.parent / "demo/CHEATSHEET.md").exists())
 
-    def test_overlay_never_overwrites_a_generated_file(self):
+    def test_overlay_replaces_a_generated_file(self):
         preset = Preset.load(self.make_preset([{"label": "prepare", "args": [
             "python", "-c", "from pathlib import Path; Path('CHEATSHEET.md').write_text('keep')",
         ]}]))
-        with self.assertRaisesRegex(DeploymentError, "Частично"):
-            deploy(preset, "Demo", "demo", str(self.parent), self.log.append)
-        self.assertEqual((self.parent / "demo/CHEATSHEET.md").read_text(), "keep")
+        project = deploy(preset, "Demo", "demo", str(self.parent), self.log.append)
+        self.assertEqual((project / "CHEATSHEET.md").read_text(), "# Demo\n")
 
     def test_python_project(self):
         preset = Preset.load(BUNDLED_TEMPLATES / "python")
-        project = deploy(preset, "Мой Python", "Мой проект", str(self.parent), self.log.append)
+        project = deploy(preset, 'Мой "Python" & Co', "Мой проект", str(self.parent), self.log.append)
         python = project / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
-        self.assertIn("Проект готов", run(project, str(python), "main.py"))
-        self.assertIn("Ran 1 test", run(project, str(python), "-m", "unittest", "discover", "-v"))
-        self.assertIn("Мой Python", (project / "README.md").read_text(encoding="utf-8"))
+        self.assertIn('Проект Мой "Python" & Co готов к работе!' , run(project, str(python), "main.py"))
+        self.assertEqual((project / "requirements.txt").read_bytes(), b"")
+        for rel in ("tests", "pyproject.toml", "test_main.py"):
+            self.assertFalse((project / rel).exists())
+        self.assertIn(".venv", run(project, str(python), "-m", "pip", "--version"))
+        self.assertEqual(run(project, "git", "log", "-1", "--format=%s").strip(), "Initial commit")
+        self.assertIn('Мой "Python" & Co', (project / "README.md").read_text(encoding="utf-8"))
         self.assertIn("python main.py", (project / "CHEATSHEET.md").read_text(encoding="utf-8"))
         self.assertEqual(run(project, "git", "branch", "--show-current").strip(), "main")
         self.assertIn(".venv", run(project, "git", "check-ignore", ".venv"))
@@ -134,8 +138,13 @@ class DeploymentTests(unittest.TestCase):
     def test_react_project(self):
         npm = shutil.which("npm")
         self.assertIsNotNone(npm, "npm is required for the React integration test")
-        preset = Preset.load(BUNDLED_TEMPLATES / "react-ts")
-        project = deploy(preset, "Мой React App", "Web проект", str(self.parent), self.log.append)
+        for ident in ("react-ts", "react-full", "react-router", "react-tailwind"):
+            with self.subTest(preset=ident):
+                self.check_react(ident, npm)
+
+    def check_react(self, ident, npm):
+        preset = Preset.load(BUNDLED_TEMPLATES / ident)
+        project = deploy(preset, "Мой React App", f"Web проект {ident}", str(self.parent), self.log.append)
         package = json.loads((project / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(package["name"], "react-app")
         self.assertIn("react", package["dependencies"])
@@ -143,9 +152,20 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue((project / "package-lock.json").is_file())
         self.assertIn("npm run dev", (project / "CHEATSHEET.md").read_text(encoding="utf-8"))
         self.assertEqual(run(project, "git", "branch", "--show-current").strip(), "main")
+        self.assertEqual(run(project, "git", "log", "-1", "--format=%s").strip(), "Initial commit")
+        self.assertFalse(run(project, "git", "ls-files", "node_modules"))
+        self.assertTrue((project / "README.md").is_file())
+        self.assertFalse((project / "src/assets").exists())
+        self.assertEqual("react-router-dom" in package["dependencies"], ident in ("react-router", "react-full"))
+        self.assertEqual("tailwindcss" in package["devDependencies"], ident in ("react-tailwind", "react-full"))
+        for name in ("Button", "Card", "Counter", "Toggle"):
+            self.assertTrue((project / f"src/components/{name}.tsx").exists())
         run(project, npm, "run", "lint")
         run(project, npm, "run", "build")
         self.assertTrue((project / "dist/index.html").is_file())
+        if os.getenv("DEPLOYER_BROWSER_TESTS") == "1":
+            from browser_checks import check_page
+            check_page(self, project, ident in ("react-router", "react-full"), ident in ("react-tailwind", "react-full"))
         args = [shutil.which("node"), str(project / "node_modules/vite/bin/vite.js")]
         self.assert_serves_html(project, args, "/src/main.tsx")
         self.assert_serves_html(project, [*args, "preview"], "/assets/")

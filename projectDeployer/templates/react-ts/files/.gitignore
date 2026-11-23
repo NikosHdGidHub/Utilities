@@ -1,0 +1,12 @@
+.env
+.env.*
+*.tmp
+*.log
+*.local
+*~
+.DS_Store
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+.vite/
